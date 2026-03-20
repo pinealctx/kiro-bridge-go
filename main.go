@@ -48,7 +48,7 @@ func runServe() {
 	_, err := tm.GetAccessToken(cfg.IdcRefreshURL)
 	if err != nil {
 		log.Printf("WARNING: Could not load token: %v", err)
-		log.Printf("Make sure kiro-cli is logged in or run './kiro-gateway login' first")
+		log.Printf("Make sure kiro-cli is logged in or run './kiro-bridge-go login' first")
 	}
 
 	client := cw.NewClient(cfg.CodeWhispererURL, cfg)

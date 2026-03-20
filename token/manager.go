@@ -329,7 +329,7 @@ func (m *Manager) GetAccessToken(idcURL string) (string, error) {
 	if m.isLegacy && !m.legacyClientSecretExpiry.IsZero() {
 		remaining := time.Until(m.legacyClientSecretExpiry)
 		if remaining < 0 {
-			return "", fmt.Errorf("device registration (client_secret) expired — run 'kiro-cli login' or './kiro-gateway login' to re-authenticate")
+			return "", fmt.Errorf("device registration (client_secret) expired — run 'kiro-cli login' or 'kiro-bridge-go login' to re-authenticate")
 		}
 		if remaining < 7*24*time.Hour {
 			log.Printf("WARNING: client_secret expires in %.1f days — run 'kiro-cli login' soon", remaining.Hours()/24)
