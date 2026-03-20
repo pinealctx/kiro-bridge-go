@@ -57,7 +57,7 @@ func NewServer(cfg *config.Config, tm *token.Manager, client *cw.Client) *Server
 // Run starts the HTTP server.
 func (s *Server) Run() error {
 	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
-	log.Printf("Starting kiro-gateway on %s", addr)
+	log.Printf("Starting kiro-bridge-go on %s", addr)
 	return s.engine.Run(addr)
 }
 
@@ -129,7 +129,7 @@ func timingSafeEqual(a, b string) bool {
 
 func (s *Server) handleRoot(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"service": "kiro-gateway",
+		"service": "kiro-bridge-go",
 		"version": "1.0.0",
 		"status":  "ok",
 	})

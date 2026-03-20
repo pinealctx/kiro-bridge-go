@@ -17,6 +17,12 @@ import (
 )
 
 func (s *Server) handleMessages(c *gin.Context) {
+	if s.cfg.Debug {
+		rawBody, _ := io.ReadAll(c.Request.Body)
+		log.Printf("[debug] handleMessages raw body: %s", string(rawBody))
+		c.Request.Body = io.NopCloser(strings.NewReader(string(rawBody)))
+	}
+
 	var body map[string]interface{}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"type": "invalid_request_error", "message": "invalid JSON"})
@@ -113,6 +119,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	w.(http.Flusher).Flush()
 
 	var textBuf strings.Builder
+	var rawRsp strings.Builder
 	var toolCallsSeen []string
 	outputTruncated := false
 	continuationCount := 0
@@ -126,6 +133,9 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	var active *activeTool
 
 	doStream := func(msgs []map[string]interface{}) {
+
+		rawRsp.Reset()
+
 		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID)
 		if err != nil {
 			errData, _ := json.Marshal(map[string]interface{}{"type": "error", "error": map[string]interface{}{"type": "api_error", "message": err.Error()}})
@@ -143,6 +153,12 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 			if err != nil {
 				log.Printf("stream read error: %v", err)
 				break
+			}
+
+			if s.cfg.Debug {
+				jsonData, _ := json.Marshal(msg)
+				rawRsp.Write(jsonData)
+				rawRsp.Write([]byte("\n======debug append======\n"))
 			}
 
 			switch msg.EventType {
@@ -212,7 +228,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 			case "exception":
 				errMsg, _ := msg.Payload["message"].(string)
 				errData, _ := json.Marshal(map[string]interface{}{
-					"type": "error",
+					"type":  "error",
 					"error": map[string]interface{}{"type": "api_error", "message": errMsg},
 				})
 				fmt.Fprint(w, sseEvent("error", string(errData)))
@@ -222,6 +238,10 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	}
 
 	doStream(messages)
+
+	if s.cfg.Debug {
+		log.Printf("raw streaming response blockIndex: [%d] , continuationCount: %d, content: %s", blockIndex, continuationCount, rawRsp.String())
+	}
 
 	// Auto-continuation
 	if outputTruncated && len(toolCallsSeen) == 0 && !shouldAutoContinue(textBuf.String(), messages) {
@@ -235,6 +255,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 			map[string]interface{}{"role": "assistant", "content": textBuf.String()},
 			map[string]interface{}{"role": "user", "content": continuationPrompt},
 		)
+		log.Printf("Auto-continuation attempt %d: messages=%d", continuationCount, len(contMessages))
 		doStream(contMessages)
 		if outputTruncated && !shouldAutoContinue(textBuf.String(), messages) {
 			outputTruncated = false
@@ -266,8 +287,8 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	stopData, _ := json.Marshal(map[string]interface{}{
 		"type": "message_stop",
 		"amazon-bedrock-invocationMetrics": map[string]interface{}{
-			"inputTokenCount":  promptTokens,
-			"outputTokenCount": completionTokens,
+			"inputTokenCount":   promptTokens,
+			"outputTokenCount":  completionTokens,
 			"invocationLatency": int(time.Since(time.Unix(created, 0)).Milliseconds()),
 		},
 	})
@@ -656,7 +677,7 @@ func convertToolChoice(tc interface{}) string {
 		case "tool":
 			name, _ := v["name"].(string)
 			b, _ := json.Marshal(map[string]interface{}{
-				"type": "function",
+				"type":     "function",
 				"function": map[string]interface{}{"name": name},
 			})
 			return string(b)
@@ -664,4 +685,3 @@ func convertToolChoice(tc interface{}) string {
 	}
 	return ""
 }
-

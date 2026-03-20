@@ -100,7 +100,7 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:             getInt("PORT", fileCfg.Port, 8000),
+		Port:             getInt("PORT", fileCfg.Port, 8001),
 		Host:             get("HOST", fileCfg.Host, "0.0.0.0"),
 		APIKey:           get("API_KEY", fileCfg.APIKey, ""),
 		LogLevel:         get("LOG_LEVEL", fileCfg.LogLevel, "info"),
