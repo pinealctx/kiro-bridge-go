@@ -6,3 +6,4 @@ kiro-gateway
 *.test
 kiro-bridge-go
 kiro-bridge
+log/
