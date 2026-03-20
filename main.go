@@ -35,7 +35,7 @@ func main() {
 		log.Printf("Make sure kiro-cli is logged in before making requests")
 	}
 
-	client := cw.NewClient(cfg.CodeWhispererURL)
+	client := cw.NewClient(cfg.CodeWhispererURL, cfg)
 	client.IsExternalIdP = tm.IsExternalIdP
 
 	server := api.NewServer(cfg, tm, client)

@@ -8,38 +8,8 @@ import (
 	"kiro-bridge-go/sanitizer"
 )
 
-// MODEL_MAP maps client model names to CW upstream model IDs.
-var modelMap = map[string]string{
-	"claude-opus-4.6-1m":         "claude-opus-4.6-1m",
-	"claude-opus-4-6":            "claude-opus-4.6",
-	"claude-opus-4.5":            "claude-opus-4.5",
-	"claude-opus-4-5":            "claude-opus-4.5",
-	"claude-opus-4-5-20251101":   "claude-opus-4.5",
-	"claude-sonnet-4.6-1m":       "claude-sonnet-4.6",
-	"claude-sonnet-4-6":          "claude-sonnet-4.6",
-	"claude-sonnet-4.5":          "claude-sonnet-4.5",
-	"claude-sonnet-4-5":          "claude-sonnet-4.5",
-	"claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
-	"claude-haiku-4-5-20251001":  "claude-opus-4.6",
-	"claude-sonnet-4-20250514":   "claude-opus-4.6",
-}
-
-const defaultModel = "claude-opus-4.6"
-
-func resolveModel(model string) string {
-	m := strings.TrimSpace(model)
-	if m == "" {
-		return defaultModel
-	}
-	if v, ok := modelMap[m]; ok {
-		return v
-	}
-	return defaultModel
-}
-
 // OpenAIToCW converts an OpenAI ChatCompletion request to CodeWhisperer format.
 func OpenAIToCW(messages []map[string]interface{}, model string, tools []map[string]interface{}, profileARN, conversationID string) map[string]interface{} {
-	cwModel := resolveModel(model)
 
 	if conversationID == "" {
 		conversationID = newUUID()
@@ -94,7 +64,7 @@ func OpenAIToCW(messages []map[string]interface{}, model string, tools []map[str
 	history = append(history, map[string]interface{}{
 		"userInputMessage": map[string]interface{}{
 			"content": finalSystem,
-			"modelId": cwModel,
+			"modelId": model,
 			"origin":  "AI_EDITOR",
 		},
 	})
@@ -135,14 +105,14 @@ func OpenAIToCW(messages []map[string]interface{}, model string, tools []map[str
 			userBuffer = append(userBuffer, msg)
 		} else if role == "assistant" {
 			if len(userBuffer) > 0 {
-				history = append(history, buildHistoryUserMessage(userBuffer, cwModel))
+				history = append(history, buildHistoryUserMessage(userBuffer, model))
 				userBuffer = nil
 			}
 			history = append(history, buildHistoryAssistantMessage(msg))
 		}
 	}
 	if len(userBuffer) > 0 {
-		history = append(history, buildHistoryUserMessage(userBuffer, cwModel))
+		history = append(history, buildHistoryUserMessage(userBuffer, model))
 		history = append(history, map[string]interface{}{
 			"assistantResponseMessage": map[string]interface{}{
 				"content":  "OK",
@@ -183,11 +153,11 @@ func OpenAIToCW(messages []map[string]interface{}, model string, tools []map[str
 			"conversationId":  conversationID,
 			"currentMessage": map[string]interface{}{
 				"userInputMessage": map[string]interface{}{
-					"content":                currentContent,
-					"modelId":                cwModel,
-					"origin":                 "AI_EDITOR",
+					"content":                 currentContent,
+					"modelId":                 model,
+					"origin":                  "AI_EDITOR",
 					"userInputMessageContext": currentUserMsgCtx,
-					"images":                 images,
+					"images":                  images,
 				},
 			},
 			"history": history,

@@ -35,6 +35,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 	openaiMessages := anthropicMessagesToOpenAI(anthropicMessages, system)
 
 	model, _ := body["model"].(string)
+	reqModel := model != ""
 	if model == "" {
 		model = s.cfg.DefaultModel
 	}
@@ -52,7 +53,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 		tools = nil
 	}
 
-	log.Printf("messages: model=%s messages=%d tools=%d stream=%v", model, len(openaiMessages), len(tools), stream)
+	log.Printf("messages: model=%s reqHasModel=%v, messages=%d tools=%d stream=%v", model, reqModel, len(openaiMessages), len(tools), stream)
 
 	accessToken, err := s.tm.GetAccessToken(s.cfg.IdcRefreshURL)
 	if err != nil {

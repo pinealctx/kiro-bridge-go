@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"kiro-bridge-go/config"
 	"log"
 	"net"
 	"net/http"
@@ -16,10 +17,11 @@ type Client struct {
 	http          *http.Client
 	cwURL         string
 	IsExternalIdP bool
+	cfg           *config.Config
 }
 
 // NewClient creates a new CodeWhisperer client.
-func NewClient(cwURL string) *Client {
+func NewClient(cwURL string, cfg *config.Config) *Client {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout: 30 * time.Second,
@@ -32,6 +34,7 @@ func NewClient(cwURL string) *Client {
 			Timeout:   7200 * time.Second,
 		},
 		cwURL: cwURL,
+		cfg:   cfg,
 	}
 }
 
@@ -47,7 +50,8 @@ func (c *Client) GenerateStream(
 	tools []map[string]interface{},
 	conversationID string,
 ) (*Reader, io.Closer, error) {
-	cwReq := OpenAIToCW(messages, model, tools, profileARN, conversationID)
+	cwModel := c.resolveModel(model)
+	cwReq := OpenAIToCW(messages, cwModel, tools, profileARN, conversationID)
 
 	body, err := json.Marshal(cwReq)
 	if err != nil {
@@ -63,11 +67,11 @@ func (c *Client) GenerateStream(
 	}
 
 	headers := map[string]string{
-		"Content-Type":                    "application/x-amz-json-1.0",
-		"Authorization":                   "Bearer " + accessToken,
-		"x-amz-target":                    "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		"x-amzn-codewhisperer-optout":     "true",
-		"User-Agent":                      "kiro-cli-chat-macos-aarch64-1.27.2",
+		"Content-Type":                "application/x-amz-json-1.0",
+		"Authorization":               "Bearer " + accessToken,
+		"x-amz-target":                "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+		"x-amzn-codewhisperer-optout": "true",
+		"User-Agent":                  "kiro-cli-chat-macos-aarch64-1.27.2",
 	}
 	if c.IsExternalIdP {
 		headers["TokenType"] = "EXTERNAL_IDP"
@@ -116,4 +120,13 @@ func (c *Client) GenerateStream(
 	}
 
 	return nil, nil, fmt.Errorf("CodeWhisperer failed after %d attempts: %w", len(retryBackoff)+1, lastErr)
+}
+
+func (c *Client) resolveModel(model string) string {
+	cwModel, ok := c.cfg.ModelMap[model]
+	if !ok {
+		cwModel = c.cfg.DefaultModel
+	}
+	log.Printf("reqModel: %s -> cwModel: %s", model, cwModel)
+	return cwModel
 }
