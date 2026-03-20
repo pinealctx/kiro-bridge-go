@@ -9,6 +9,11 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func defaultTokenPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".kiro-bridge", "token.json")
+}
+
 type Config struct {
 	Port             int
 	Host             string
@@ -21,6 +26,7 @@ type Config struct {
 	ModelMap         map[string]string
 	DefaultModel     string
 	Debug            bool
+	TokenFilePath    string
 }
 
 type tomlConfig struct {
@@ -34,6 +40,7 @@ type tomlConfig struct {
 	ProfileARN       string            `toml:"profile_arn"`
 	ModelMap         map[string]string `toml:"model_map"`
 	DefaultModel     string            `toml:"default_model"`
+	TokenFilePath    string            `toml:"token_file_path"`
 }
 
 func defaultDBPath() string {
@@ -114,5 +121,6 @@ func Load() *Config {
 		ProfileARN:       get("PROFILE_ARN", fileCfg.ProfileARN, ""),
 		ModelMap:         modelMap,
 		DefaultModel:     get("DEFAULT_MODEL", fileCfg.DefaultModel, "claude-opus-4-6"),
+		TokenFilePath:    get("TOKEN_FILE_PATH", fileCfg.TokenFilePath, defaultTokenPath()),
 	}
 }

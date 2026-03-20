@@ -74,6 +74,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		return
 	}
 	profileARN := s.tm.ProfileARN()
+	s.client.IsExternalIdP = s.tm.IsExternalIdP
 
 	if stream {
 		includeUsage := false

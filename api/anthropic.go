@@ -17,16 +17,16 @@ import (
 )
 
 func (s *Server) handleMessages(c *gin.Context) {
-	if s.cfg.Debug {
-		rawBody, _ := io.ReadAll(c.Request.Body)
-		log.Printf("[debug] handleMessages raw body: %s", string(rawBody))
-		c.Request.Body = io.NopCloser(strings.NewReader(string(rawBody)))
-	}
 
 	var body map[string]interface{}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"type": "invalid_request_error", "message": "invalid JSON"})
 		return
+	}
+
+	if s.cfg.Debug {
+		bodyBin, _ := json.MarshalIndent(body, "", "  ")
+		log.Printf("[debug] handleMessages raw body: %s", string(bodyBin))
 	}
 
 	// Convert Anthropic messages to OpenAI format
@@ -61,6 +61,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 		return
 	}
 	profileARN := s.tm.ProfileARN()
+	s.client.IsExternalIdP = s.tm.IsExternalIdP
 
 	if stream {
 		s.streamAnthropicResponse(c, accessToken, openaiMessages, model, profileARN, tools, anthropicMessages)
@@ -448,6 +449,13 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 
 	promptTokens := counter.EstimateMessagesTokensJSON(origMessages)
 	completionTokens := counter.EstimateTokens(fullText)
+
+	if s.cfg.Debug {
+		contentBin, _ := json.MarshalIndent(content, "", "  ")
+		log.Printf("receive response: msgID: %v, stopReason: %v, content: %s", msgID, stopReason, string(contentBin))
+	} else {
+		log.Printf("receive response: msgID: %v, stopReason: %v, content length: %d chars", msgID, stopReason, len(fullText))
+	}
 
 	c.JSON(200, gin.H{
 		"id":            msgID,

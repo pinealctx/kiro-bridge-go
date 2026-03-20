@@ -34,13 +34,16 @@ type Manager struct {
 	legacyClientSecretExpiry time.Time
 	IsExternalIdP            bool
 	http                     *http.Client
+	loginToken               *LoginToken // PKCE login token
+	tokenFilePath            string      // path to token.json
 }
 
-func NewManager(dbPath, profileARN string) *Manager {
+func NewManager(dbPath, profileARN, tokenFilePath string) *Manager {
 	return &Manager{
-		dbPath:     dbPath,
-		profileARN: profileARN,
-		http:       &http.Client{Timeout: 15 * time.Second},
+		dbPath:        dbPath,
+		profileARN:    profileARN,
+		tokenFilePath: tokenFilePath,
+		http:          &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -282,6 +285,37 @@ func (m *Manager) GetAccessToken(idcURL string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Priority 1: PKCE login token (from token.json)
+	if m.loginToken == nil && m.tokenFilePath != "" {
+		if lt, err := LoadLoginToken(m.tokenFilePath); err == nil {
+			m.loginToken = lt
+			m.IsExternalIdP = lt.IsExternalIdP
+			if lt.ProfileArn != "" {
+				m.profileARN = lt.ProfileArn
+			}
+			log.Printf("Loaded login token from %s (external_idp=%v)", m.tokenFilePath, lt.IsExternalIdP)
+		}
+	}
+
+	if m.loginToken != nil {
+		// Check if login token needs refresh
+		if time.Now().After(m.loginToken.ExpiresAt.Add(-5 * time.Minute)) {
+			if err := m.refreshLoginToken(); err != nil {
+				log.Printf("Login token refresh failed: %v", err)
+				// If still valid, use it
+				if time.Now().Before(m.loginToken.ExpiresAt) {
+					return m.loginToken.AccessToken, nil
+				}
+				// Fall through to SQLite
+			} else {
+				return m.loginToken.AccessToken, nil
+			}
+		} else {
+			return m.loginToken.AccessToken, nil
+		}
+	}
+
+	// Priority 2: SQLite DB (kiro-cli)
 	if m.token == nil {
 		t, err := m.readDB()
 		if err != nil {
@@ -295,7 +329,7 @@ func (m *Manager) GetAccessToken(idcURL string) (string, error) {
 	if m.isLegacy && !m.legacyClientSecretExpiry.IsZero() {
 		remaining := time.Until(m.legacyClientSecretExpiry)
 		if remaining < 0 {
-			return "", fmt.Errorf("device registration (client_secret) expired — run 'kiro-cli login' to re-authenticate")
+			return "", fmt.Errorf("device registration (client_secret) expired — run 'kiro-cli login' or './kiro-gateway login' to re-authenticate")
 		}
 		if remaining < 7*24*time.Hour {
 			log.Printf("WARNING: client_secret expires in %.1f days — run 'kiro-cli login' soon", remaining.Hours()/24)
@@ -311,7 +345,6 @@ func (m *Manager) GetAccessToken(idcURL string) (string, error) {
 			refreshErr = m.refreshExternalIdP(m.token)
 		}
 		if refreshErr != nil {
-			// Graceful degradation: use old token if not fully expired
 			if time.Now().Before(m.token.ExpiresAt) {
 				log.Printf("Token refresh failed, using existing token (still valid): %v", refreshErr)
 				return m.token.AccessToken, nil
@@ -326,6 +359,9 @@ func (m *Manager) GetAccessToken(idcURL string) (string, error) {
 func (m *Manager) ProfileARN() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.loginToken != nil && m.loginToken.ProfileArn != "" {
+		return m.loginToken.ProfileArn
+	}
 	if m.token == nil {
 		t, err := m.readDB()
 		if err != nil {
@@ -334,6 +370,165 @@ func (m *Manager) ProfileARN() string {
 		m.token = t
 	}
 	return m.token.ProfileARN
+}
+
+// SetLoginToken injects a token obtained from the PKCE login flow.
+func (m *Manager) SetLoginToken(lt *LoginToken) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lt.RefreshScope == "" {
+		lt.RefreshScope = ExtractRefreshScope(lt.AccessToken)
+		if lt.RefreshScope != "" {
+			log.Printf("Extracted refresh scope from JWT: %s", lt.RefreshScope)
+		}
+	}
+	m.loginToken = lt
+	m.IsExternalIdP = lt.IsExternalIdP
+	if lt.ProfileArn != "" {
+		m.profileARN = lt.ProfileArn
+	}
+}
+
+// refreshLoginToken refreshes the PKCE login token.
+func (m *Manager) refreshLoginToken() error {
+	lt := m.loginToken
+	if lt.RefreshToken == "" {
+		return fmt.Errorf("no refresh token available")
+	}
+	if lt.TokenEndpoint == "" {
+		return fmt.Errorf("no token endpoint for login token refresh")
+	}
+
+	var err error
+	if IsAWSIdCEndpoint(lt.TokenEndpoint) {
+		err = m.refreshLoginAWSIdC(lt)
+	} else {
+		err = m.refreshLoginOAuth2(lt)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Persist refreshed token
+	if m.tokenFilePath != "" {
+		if saveErr := SaveLoginToken(m.tokenFilePath, lt); saveErr != nil {
+			log.Printf("WARNING: failed to persist refreshed token: %v", saveErr)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) refreshLoginOAuth2(lt *LoginToken) error {
+	form := url.Values{}
+	form.Set("client_id", lt.ClientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", lt.RefreshToken)
+	if lt.ClientSecret != "" {
+		form.Set("client_secret", lt.ClientSecret)
+	}
+	if lt.RefreshScope != "" {
+		form.Set("scope", lt.RefreshScope)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= len(retryDelays); attempt++ {
+		if attempt > 0 {
+			time.Sleep(retryDelays[attempt-1])
+		}
+
+		resp, err := m.http.PostForm(lt.TokenEndpoint, form)
+		if err != nil {
+			lastErr = fmt.Errorf("login token refresh request: %w", err)
+			continue
+		}
+
+		if resp.StatusCode >= 500 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("login token refresh status: %d", resp.StatusCode)
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			return fmt.Errorf("login token refresh status: %d", resp.StatusCode)
+		}
+
+		var result struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    int    `json:"expires_in"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return fmt.Errorf("decode login token refresh: %w", err)
+		}
+		resp.Body.Close()
+
+		if result.RefreshToken != "" {
+			lt.RefreshToken = result.RefreshToken
+		}
+		lt.AccessToken = result.AccessToken
+		lt.ExpiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+		log.Printf("Login token refreshed (OAuth2), expires in %ds", result.ExpiresIn)
+		return nil
+	}
+	return fmt.Errorf("login token refresh failed after retries: %w", lastErr)
+}
+
+func (m *Manager) refreshLoginAWSIdC(lt *LoginToken) error {
+	reqBody, _ := json.Marshal(map[string]string{
+		"clientId":     lt.ClientID,
+		"clientSecret": lt.ClientSecret,
+		"grantType":    "refresh_token",
+		"refreshToken": lt.RefreshToken,
+	})
+
+	var lastErr error
+	for attempt := 0; attempt <= len(retryDelays); attempt++ {
+		if attempt > 0 {
+			time.Sleep(retryDelays[attempt-1])
+		}
+
+		req, _ := http.NewRequest("POST", lt.TokenEndpoint, strings.NewReader(string(reqBody)))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := m.http.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("AWS IdC token refresh request: %w", err)
+			continue
+		}
+
+		if resp.StatusCode >= 500 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("AWS IdC token refresh status: %d", resp.StatusCode)
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			return fmt.Errorf("AWS IdC token refresh status: %d", resp.StatusCode)
+		}
+
+		var result struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+			ExpiresIn    int    `json:"expiresIn"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return fmt.Errorf("decode AWS IdC token refresh: %w", err)
+		}
+		resp.Body.Close()
+
+		if result.RefreshToken != "" {
+			lt.RefreshToken = result.RefreshToken
+		}
+		lt.AccessToken = result.AccessToken
+		lt.ExpiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+		log.Printf("Login token refreshed (AWS IdC), expires in %ds", result.ExpiresIn)
+		return nil
+	}
+	return fmt.Errorf("AWS IdC token refresh failed after retries: %w", lastErr)
 }
 
 func min(a, b int) int {
