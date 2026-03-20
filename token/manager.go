@@ -16,12 +16,12 @@ import (
 )
 
 type TokenData struct {
-	AccessToken              string
-	RefreshToken             string
-	ExpiresAt                time.Time
-	ClientID                 string
-	TokenEndpoint            string // external-idp only
-	ProfileARN               string
+	AccessToken   string
+	RefreshToken  string
+	ExpiresAt     time.Time
+	ClientID      string
+	TokenEndpoint string // external-idp only
+	ProfileARN    string
 }
 
 type Manager struct {
@@ -111,13 +111,13 @@ func (m *Manager) parseExternalIdPToken(db *sql.DB, raw string) (*TokenData, err
 	}
 
 	profileARN := m.readProfileARN(db)
-	log.Printf("Loaded external-idp token (Microsoft OAuth2), expires at %s", data["expires_at"])
+	log.Printf("Loaded external-idp token (Microsoft OAuth2), expires at %s, profileARN: %s", data["expires_at"], profileARN)
 
 	td := &TokenData{
-		AccessToken:   data["access_token"].(string),
-		RefreshToken:  data["refresh_token"].(string),
-		ExpiresAt:     expiresAt,
-		ProfileARN:    profileARN,
+		AccessToken:  data["access_token"].(string),
+		RefreshToken: data["refresh_token"].(string),
+		ExpiresAt:    expiresAt,
+		ProfileARN:   profileARN,
 	}
 	if v, ok := data["client_id"].(string); ok {
 		td.ClientID = v
