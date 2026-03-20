@@ -126,6 +126,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	outputTruncated := false
 	continuationCount := 0
 	blockIndex := 0
+	textBlockOpen := true // we already sent content_block_start for text at index 0
 
 	type activeTool struct {
 		id       string
@@ -133,6 +134,28 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 		inputBuf strings.Builder
 	}
 	var active *activeTool
+
+	// closeTextBlock closes the current text block if open
+	closeTextBlock := func() {
+		if textBlockOpen {
+			cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
+			fmt.Fprint(w, sseEvent("content_block_stop", string(cbStop)))
+			blockIndex++
+			textBlockOpen = false
+		}
+	}
+
+	// ensureTextBlock opens a new text block if not already open
+	ensureTextBlock := func() {
+		if !textBlockOpen {
+			cbStart, _ := json.Marshal(map[string]interface{}{
+				"type": "content_block_start", "index": blockIndex,
+				"content_block": map[string]interface{}{"type": "text", "text": ""},
+			})
+			fmt.Fprint(w, sseEvent("content_block_start", string(cbStart)))
+			textBlockOpen = true
+		}
+	}
 
 	doStream := func(msgs []map[string]interface{}) {
 
@@ -169,6 +192,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 				if content != "" {
 					content = sanitizer.SanitizeText(content, true)
 					if content != "" {
+						ensureTextBlock()
 						textBuf.WriteString(content)
 						deltaData, _ := json.Marshal(map[string]interface{}{
 							"type": "content_block_delta", "index": blockIndex,
@@ -186,7 +210,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 
 				if isStop {
 					if active != nil && !sanitizer.KiroBuiltinTools[active.name] {
-						// Close input_json_delta block
+						// Close tool_use block
 						cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
 						fmt.Fprint(w, sseEvent("content_block_stop", string(cbStop)))
 						toolCallsSeen = append(toolCallsSeen, active.name)
@@ -199,10 +223,8 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 				if name != "" && toolUseID != "" && active == nil {
 					active = &activeTool{id: toolUseID, name: name}
 					if !sanitizer.KiroBuiltinTools[name] {
-						// Close text block, start tool_use block
-						cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
-						fmt.Fprint(w, sseEvent("content_block_stop", string(cbStop)))
-						blockIndex++
+						// Close text block if open, then start tool_use block
+						closeTextBlock()
 						cbStart2, _ := json.Marshal(map[string]interface{}{
 							"type": "content_block_start", "index": blockIndex,
 							"content_block": map[string]interface{}{"type": "tool_use", "id": toolUseID, "name": name, "input": map[string]interface{}{}},
@@ -265,9 +287,8 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 		}
 	}
 
-	// Close final text block
-	cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
-	fmt.Fprint(w, sseEvent("content_block_stop", string(cbStop)))
+	// Close final text block if still open
+	closeTextBlock()
 
 	// message_delta
 	stopReason := "end_turn"
