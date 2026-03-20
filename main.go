@@ -12,10 +12,14 @@ import (
 
 func main() {
 	debug := flag.Bool("debug", false, "Enable debug logging")
+	port := flag.Int("port", 0, "Server port (overrides config/env)")
 	flag.Parse()
 
 	cfg := config.Load()
 	cfg.Debug = *debug
+	if *port != 0 {
+		cfg.Port = *port
+	}
 
 	if cfg.Debug {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)

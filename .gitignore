@@ -4,3 +4,5 @@ py_version/
 kiro-gateway
 *.exe
 *.test
+kiro-bridge-go
+kiro-bridge
