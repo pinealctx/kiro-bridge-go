@@ -210,7 +210,31 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 
 				if isStop {
 					if active != nil && !sanitizer.KiroBuiltinTools[active.name] {
-						// Close tool_use block
+						// Close text block if open, then emit complete tool_use block
+						closeTextBlock()
+						cbStart2, _ := json.Marshal(map[string]interface{}{
+							"type": "content_block_start", "index": blockIndex,
+							"content_block": map[string]interface{}{"type": "tool_use", "id": active.id, "name": active.name, "input": map[string]interface{}{}},
+						})
+						fmt.Fprint(w, sseEvent("content_block_start", string(cbStart2)))
+
+						// Parse accumulated input and send as complete JSON
+						inputStr := active.inputBuf.String()
+						var inputObj interface{}
+						if inputStr != "" {
+							if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
+								inputObj = map[string]interface{}{"raw": inputStr}
+							}
+						} else {
+							inputObj = map[string]interface{}{}
+						}
+						inputJSON, _ := json.Marshal(inputObj)
+						deltaData, _ := json.Marshal(map[string]interface{}{
+							"type": "content_block_delta", "index": blockIndex,
+							"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": string(inputJSON)},
+						})
+						fmt.Fprint(w, sseEvent("content_block_delta", string(deltaData)))
+
 						cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
 						fmt.Fprint(w, sseEvent("content_block_stop", string(cbStop)))
 						toolCallsSeen = append(toolCallsSeen, active.name)
@@ -222,25 +246,9 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 				}
 				if name != "" && toolUseID != "" && active == nil {
 					active = &activeTool{id: toolUseID, name: name}
-					if !sanitizer.KiroBuiltinTools[name] {
-						// Close text block if open, then start tool_use block
-						closeTextBlock()
-						cbStart2, _ := json.Marshal(map[string]interface{}{
-							"type": "content_block_start", "index": blockIndex,
-							"content_block": map[string]interface{}{"type": "tool_use", "id": toolUseID, "name": name, "input": map[string]interface{}{}},
-						})
-						fmt.Fprint(w, sseEvent("content_block_start", string(cbStart2)))
-						w.(http.Flusher).Flush()
-					}
 				}
-				if inputFrag, ok := msg.Payload["input"].(string); ok && active != nil && !sanitizer.KiroBuiltinTools[active.name] {
+				if inputFrag, ok := msg.Payload["input"].(string); ok && active != nil {
 					active.inputBuf.WriteString(inputFrag)
-					deltaData, _ := json.Marshal(map[string]interface{}{
-						"type": "content_block_delta", "index": blockIndex,
-						"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": inputFrag},
-					})
-					fmt.Fprint(w, sseEvent("content_block_delta", string(deltaData)))
-					w.(http.Flusher).Flush()
 				}
 
 			case "contextUsageEvent":
@@ -473,9 +481,9 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 
 	if s.cfg.Debug {
 		contentBin, _ := json.MarshalIndent(content, "", "  ")
-		log.Printf("receive response: msgID: %v, stopReason: %v, content: %s", msgID, stopReason, string(contentBin))
+		log.Printf("receive non-stream response: msgID: %v, stopReason: %v, content: %s", msgID, stopReason, string(contentBin))
 	} else {
-		log.Printf("receive response: msgID: %v, stopReason: %v, content length: %d chars", msgID, stopReason, len(fullText))
+		log.Printf("receive non-stream response: msgID: %v, stopReason: %v, content length: %d chars", msgID, stopReason, len(fullText))
 	}
 
 	c.JSON(200, gin.H{
