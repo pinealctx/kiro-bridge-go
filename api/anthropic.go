@@ -122,6 +122,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 
 	var textBuf strings.Builder
 	var rawRsp strings.Builder
+	var cwRsp strings.Builder
 	var toolCallsSeen []string
 	outputTruncated := false
 	continuationCount := 0
@@ -160,6 +161,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	doStream := func(msgs []map[string]interface{}) {
 
 		rawRsp.Reset()
+		cwRsp.Reset()
 
 		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID)
 		if err != nil {
@@ -180,17 +182,17 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 				break
 			}
 
-			if s.cfg.Debug {
-				jsonData, _ := json.Marshal(msg)
-				rawRsp.Write(jsonData)
-				rawRsp.Write([]byte("\n======debug append======\n"))
-			}
-
 			switch msg.EventType {
 			case "assistantResponseEvent":
 				content, _ := msg.Payload["content"].(string)
 				if content != "" {
+					if s.cfg.Debug {
+						rawRsp.WriteString(content)
+					}
 					content = sanitizer.SanitizeText(content, true)
+					if s.cfg.Debug {
+						cwRsp.WriteString(content)
+					}
 					if content != "" {
 						ensureTextBlock()
 						textBuf.WriteString(content)
@@ -229,6 +231,18 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 							inputObj = map[string]interface{}{}
 						}
 						inputJSON, _ := json.Marshal(inputObj)
+						if s.cfg.Debug {
+							prettyJson, inerr := json.MarshalIndent(inputObj, "", "  ")
+							rawRsp.WriteString("name: " + active.name + "\n")
+							cwRsp.WriteString("name: " + active.name + "\n")
+							if inerr == nil {
+								rawRsp.Write(prettyJson)
+								cwRsp.Write(prettyJson)
+							} else {
+								rawRsp.Write(inputJSON)
+								cwRsp.Write(inputJSON)
+							}
+						}
 						deltaData, _ := json.Marshal(map[string]interface{}{
 							"type": "content_block_delta", "index": blockIndex,
 							"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": string(inputJSON)},
@@ -263,6 +277,12 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 					"type":  "error",
 					"error": map[string]interface{}{"type": "api_error", "message": errMsg},
 				})
+
+				rawRsp.WriteString("\n")
+				cwRsp.WriteString("\n")
+				rawRsp.Write(errData)
+				cwRsp.Write(errData)
+
 				fmt.Fprint(w, sseEvent("error", string(errData)))
 				w.(http.Flusher).Flush()
 			}
@@ -273,6 +293,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 
 	if s.cfg.Debug {
 		log.Printf("raw streaming response blockIndex: [%d] , continuationCount: %d, content: %s", blockIndex, continuationCount, rawRsp.String())
+		log.Printf("cw  streaming response blockIndex: [%d] , continuationCount: %d, content: %s", blockIndex, continuationCount, cwRsp.String())
 	}
 
 	// Auto-continuation

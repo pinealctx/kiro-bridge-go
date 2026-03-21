@@ -359,7 +359,7 @@ func (m *Manager) GetAccessToken(idcURL string) (string, error) {
 func (m *Manager) ProfileARN() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.loginToken != nil && m.loginToken.ProfileArn != "" {
+	if m.loginToken != nil {
 		return m.loginToken.ProfileArn
 	}
 	if m.token == nil {
