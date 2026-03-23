@@ -125,6 +125,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	var cwRsp strings.Builder
 	var toolCallsSeen []string
 	outputTruncated := false
+	contextUsagePercentage := float64(0)
 	continuationCount := 0
 	blockIndex := 0
 	textBlockOpen := true // we already sent content_block_start for text at index 0
@@ -267,6 +268,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 
 			case "contextUsageEvent":
 				pct, _ := msg.Payload["contextUsagePercentage"].(float64)
+				contextUsagePercentage = pct
 				if pct > 0.95 {
 					outputTruncated = true
 				}
@@ -357,6 +359,8 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	})
 	fmt.Fprint(w, sseEvent("message_stop", string(stopData)))
 	w.(http.Flusher).Flush()
+
+	log.Printf("StreamEnd: stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f", stopReason, promptTokens, completionTokens, contextUsagePercentage)
 }
 
 func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, origMessages []map[string]interface{}) {
