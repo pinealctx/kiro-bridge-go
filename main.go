@@ -15,6 +15,8 @@ import (
 	"kiro-bridge-go/token"
 )
 
+var Version = "0.0.0"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[0] != "-" {
 		switch os.Args[1] {
@@ -36,6 +38,8 @@ func runServe() {
 	if *port != 0 {
 		cfg.Port = *port
 	}
+
+	log.Printf("Version: %s", Version)
 
 	if cfg.Debug {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)

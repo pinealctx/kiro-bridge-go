@@ -301,8 +301,8 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	}
 
 	if s.cfg.Debug {
-		log.Printf("raw streaming response, continuationCount: %d, content: %s", continuationCount, rawRsp.String())
-		log.Printf("cw  streaming response, continuationCount: %d, content: %s", continuationCount, cwRsp.String())
+		log.Printf("raw streaming response, continuationCount: %d, stopReason: %s, content: %s", continuationCount, stopReason, rawRsp.String())
+		log.Printf("cw  streaming response, continuationCount: %d, stopReason: %s, content: %s", continuationCount, stopReason, cwRsp.String())
 	} else {
 		log.Printf("finish streaming response, continuationCount: %d, stopReason: %s", continuationCount, stopReason)
 	}
