@@ -269,8 +269,12 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 			case "contextUsageEvent":
 				pct, _ := msg.Payload["contextUsagePercentage"].(float64)
 				contextUsagePercentage = pct
+				log.Printf("convID: %s, contextUsagePercentage is %v", convID, contextUsagePercentage)
 				if pct > 0.95 {
 					outputTruncated = true
+				}
+				if s.cfg.Debug {
+					rawRsp.WriteString(fmt.Sprintf("contextUsagePercentage is %v", contextUsagePercentage))
 				}
 
 			case "exception":
@@ -303,10 +307,10 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	}
 
 	if s.cfg.Debug {
-		log.Printf("raw streaming response, continuationCount: %d, stopReason: %s, content: %s", continuationCount, stopReason, rawRsp.String())
-		log.Printf("cw  streaming response, continuationCount: %d, stopReason: %s, content: %s", continuationCount, stopReason, cwRsp.String())
+		log.Printf("raw streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", continuationCount, outputTruncated, stopReason, rawRsp.String())
+		log.Printf("cw  streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", continuationCount, outputTruncated, stopReason, cwRsp.String())
 	} else {
-		log.Printf("finish streaming response, continuationCount: %d, stopReason: %s", continuationCount, stopReason)
+		log.Printf("finish streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s", continuationCount, outputTruncated, stopReason)
 	}
 
 	// Auto-continuation
@@ -360,7 +364,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	fmt.Fprint(w, sseEvent("message_stop", string(stopData)))
 	w.(http.Flusher).Flush()
 
-	log.Printf("StreamEnd: stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f", stopReason, promptTokens, completionTokens, contextUsagePercentage)
+	log.Printf("StreamEnd: outputTruncated: %v, stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f", outputTruncated, stopReason, promptTokens, completionTokens, contextUsagePercentage)
 }
 
 func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, origMessages []map[string]interface{}) {
