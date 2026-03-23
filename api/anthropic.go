@@ -278,10 +278,12 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 					"error": map[string]interface{}{"type": "api_error", "message": errMsg},
 				})
 
-				rawRsp.WriteString("\n")
-				cwRsp.WriteString("\n")
-				rawRsp.Write(errData)
-				cwRsp.Write(errData)
+				if s.cfg.Debug {
+					rawRsp.WriteString("\n")
+					cwRsp.WriteString("\n")
+					rawRsp.Write(errData)
+					cwRsp.Write(errData)
+				}
 
 				fmt.Fprint(w, sseEvent("error", string(errData)))
 				w.(http.Flusher).Flush()
@@ -291,9 +293,18 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 
 	doStream(messages)
 
+	stopReason := "end_turn"
+	if len(toolCallsSeen) > 0 {
+		stopReason = "tool_use"
+	} else if outputTruncated {
+		stopReason = "max_tokens"
+	}
+
 	if s.cfg.Debug {
-		log.Printf("raw streaming response blockIndex: [%d] , continuationCount: %d, content: %s", blockIndex, continuationCount, rawRsp.String())
-		log.Printf("cw  streaming response blockIndex: [%d] , continuationCount: %d, content: %s", blockIndex, continuationCount, cwRsp.String())
+		log.Printf("raw streaming response, continuationCount: %d, content: %s", continuationCount, rawRsp.String())
+		log.Printf("cw  streaming response, continuationCount: %d, content: %s", continuationCount, cwRsp.String())
+	} else {
+		log.Printf("finish streaming response, continuationCount: %d, stopReason: %s", continuationCount, stopReason)
 	}
 
 	// Auto-continuation
@@ -320,7 +331,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	closeTextBlock()
 
 	// message_delta
-	stopReason := "end_turn"
+	stopReason = "end_turn"
 	if len(toolCallsSeen) > 0 {
 		stopReason = "tool_use"
 	} else if outputTruncated {

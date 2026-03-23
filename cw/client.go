@@ -58,14 +58,6 @@ func (c *Client) GenerateStream(
 		return nil, nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	if log.Writer() != io.Discard {
-		preview := string(body)
-		if len(preview) > 2000 {
-			preview = preview[:2000]
-		}
-		log.Printf("CW request: %s", preview)
-	}
-
 	headers := map[string]string{
 		"Content-Type":                "application/x-amz-json-1.0",
 		"Authorization":               "Bearer " + accessToken,
@@ -82,6 +74,8 @@ func (c *Client) GenerateStream(
 		if attempt > 0 {
 			time.Sleep(retryBackoff[attempt-1])
 		}
+
+		log.Printf("Do CW request [attempt=%d]: conversationID: %s, reqModel: %s -> cwModel: %s, tools: %d, messages: %d", attempt, conversationID, model, cwModel, len(messages), len(messages))
 
 		req, err := http.NewRequest("POST", c.cwURL, bytes.NewReader(body))
 		if err != nil {
@@ -127,6 +121,5 @@ func (c *Client) resolveModel(model string) string {
 	if !ok {
 		cwModel = c.cfg.DefaultModel
 	}
-	log.Printf("reqModel: %s -> cwModel: %s", model, cwModel)
 	return cwModel
 }
