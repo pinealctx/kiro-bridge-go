@@ -270,7 +270,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 				pct, _ := msg.Payload["contextUsagePercentage"].(float64)
 				contextUsagePercentage = pct
 				log.Printf("convID: %s, contextUsagePercentage is %v", convID, contextUsagePercentage)
-				if pct > 0.95 {
+				if pct > 95 {
 					outputTruncated = true
 				}
 				if s.cfg.Debug {
