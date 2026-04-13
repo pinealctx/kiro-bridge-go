@@ -90,7 +90,24 @@ func loggerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		log.Printf("%s %s %d %v", c.Request.Method, c.Request.URL.Path, c.Writer.Status(), time.Since(start))
+		status := c.Writer.Status()
+		log.Printf("%s %s %s%d%s %v",
+			c.Request.Method, c.Request.URL.Path,
+			statusColor(status), status, "\033[0m",
+			time.Since(start))
+	}
+}
+
+func statusColor(code int) string {
+	switch {
+	case code >= 200 && code < 300:
+		return "\033[32m" // green
+	case code >= 400 && code < 500:
+		return "\033[33m" // yellow
+	case code >= 500:
+		return "\033[31m" // red
+	default:
+		return "" // no color
 	}
 }
 
