@@ -12,12 +12,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"kiro-bridge-go/counter"
-	"kiro-bridge-go/sanitizer"
+	"github.com/pinealctx/kiro-bridge-go/counter"
+	"github.com/pinealctx/kiro-bridge-go/sanitizer"
 )
 
 const (
-	maxContinuations        = 5
+	maxContinuations         = 5
 	minOutputForContinuation = 4000
 )
 
@@ -28,12 +28,12 @@ func (s *Server) handleListModels(c *gin.Context) {
 	var models []gin.H
 	for name := range s.cfg.ModelMap {
 		models = append(models, gin.H{
-			"id":         name,
-			"object":     "model",
-			"created":    now,
-			"owned_by":   "anthropic",
-			"root":       "claude-opus-4.6-1m",
-			"parent":     nil,
+			"id":           name,
+			"object":       "model",
+			"created":      now,
+			"owned_by":     "anthropic",
+			"root":         "claude-opus-4.6-1m",
+			"parent":       nil,
 			"capabilities": gin.H{"vision": true, "function_calling": true},
 		})
 	}
@@ -193,7 +193,7 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 								end = len(argStr)
 							}
 							tcArgs := map[string]interface{}{
-								"index": toolCallIndex,
+								"index":    toolCallIndex,
 								"function": map[string]interface{}{"arguments": argStr[i:end]},
 							}
 							fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcArgs}}, nil, nil))
@@ -235,7 +235,7 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 						end = len(argStr)
 					}
 					tcArgs := map[string]interface{}{
-						"index": toolCallIndex,
+						"index":    toolCallIndex,
 						"function": map[string]interface{}{"arguments": argStr[i:end]},
 					}
 					fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcArgs}}, nil, nil))

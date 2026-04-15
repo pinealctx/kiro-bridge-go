@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"kiro-bridge-go/sanitizer"
+	"github.com/pinealctx/kiro-bridge-go/sanitizer"
 )
 
 // OpenAIToCW converts an OpenAI ChatCompletion request to CodeWhisperer format.
@@ -101,9 +101,10 @@ func OpenAIToCW(messages []map[string]interface{}, model string, tools []map[str
 	var userBuffer []map[string]interface{}
 	for _, msg := range historyMessages {
 		role, _ := msg["role"].(string)
-		if role == "user" || role == "tool" {
+		switch role {
+		case "user", "tool":
 			userBuffer = append(userBuffer, msg)
-		} else if role == "assistant" {
+		case "assistant":
 			if len(userBuffer) > 0 {
 				history = append(history, buildHistoryUserMessage(userBuffer, model))
 				userBuffer = nil
@@ -184,9 +185,10 @@ func buildHistoryUserMessage(msgs []map[string]interface{}, cwModel string) map[
 
 	for _, msg := range msgs {
 		role, _ := msg["role"].(string)
-		if role == "user" {
+		switch role {
+		case "user":
 			textParts = append(textParts, extractText(msg["content"]))
-		} else if role == "tool" {
+		case "tool":
 			toolResults = append(toolResults, convertToolMessageToResult(msg))
 		}
 	}

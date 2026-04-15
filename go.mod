@@ -1,4 +1,4 @@
-module kiro-bridge-go
+module github.com/pinealctx/kiro-bridge-go
 
 go 1.25.0
 

@@ -9,9 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"kiro-bridge-go/config"
-	"kiro-bridge-go/cw"
-	"kiro-bridge-go/token"
+	"github.com/pinealctx/kiro-bridge-go/config"
+	"github.com/pinealctx/kiro-bridge-go/cw"
+	"github.com/pinealctx/kiro-bridge-go/token"
 )
 
 // Server holds the HTTP server and its dependencies.

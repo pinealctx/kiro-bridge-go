@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"kiro-bridge-go/config"
 	"log"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/pinealctx/kiro-bridge-go/config"
 )
 
 // Client is the CodeWhisperer HTTP client.

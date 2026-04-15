@@ -9,10 +9,10 @@ import (
 	"runtime"
 	"time"
 
-	"kiro-bridge-go/api"
-	"kiro-bridge-go/config"
-	"kiro-bridge-go/cw"
-	"kiro-bridge-go/token"
+	"github.com/pinealctx/kiro-bridge-go/api"
+	"github.com/pinealctx/kiro-bridge-go/config"
+	"github.com/pinealctx/kiro-bridge-go/cw"
+	"github.com/pinealctx/kiro-bridge-go/token"
 )
 
 var Version = "0.0.0"

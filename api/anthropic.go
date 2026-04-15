@@ -12,8 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"kiro-bridge-go/counter"
-	"kiro-bridge-go/sanitizer"
+	"github.com/pinealctx/kiro-bridge-go/counter"
+	"github.com/pinealctx/kiro-bridge-go/sanitizer"
 )
 
 func (s *Server) handleMessages(c *gin.Context) {

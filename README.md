@@ -25,7 +25,7 @@ CodeWhisperer 后端 (AWS EventStream)
 
 ```bash
 # 构建
-git install git@github.com:pinealctx/kiro-bridge-go.git@latest
+go install github.com/pinealctx/kiro-bridge-go@latest
 
 # 或者从源码安装
 git clone git@github.com:pinealctx/kiro-bridge-go.git
