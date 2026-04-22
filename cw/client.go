@@ -120,7 +120,7 @@ func (c *Client) GenerateStream(
 func (c *Client) resolveModel(model string) string {
 	cwModel, ok := c.cfg.ModelMap[model]
 	if !ok {
-		cwModel = c.cfg.DefaultModel
+		return model
 	}
 	return cwModel
 }
