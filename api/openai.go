@@ -14,6 +14,7 @@ import (
 
 	"github.com/pinealctx/kiro-bridge-go/counter"
 	"github.com/pinealctx/kiro-bridge-go/sanitizer"
+	"github.com/pinealctx/kiro-bridge-go/thinking"
 )
 
 const (
@@ -68,6 +69,15 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 
 	log.Printf("chat_completions: model=%s messages=%d tools=%d stream=%v", model, len(messages), len(tools), stream)
 
+	// Parse thinking config (supports Anthropic-style "thinking" field in OpenAI request)
+	thinkCfg := thinking.ParseConfig(body)
+	if !thinkCfg.Enabled {
+		// Also check OpenAI-style reasoning_effort
+		if effort, ok := body["reasoning_effort"].(string); ok && effort != "" {
+			thinkCfg = thinking.Config{Enabled: true, Type: "adaptive", Budget: thinking.DefaultBudgetTokens, Effort: strings.ToLower(effort)}
+		}
+	}
+
 	accessToken, err := s.tm.GetAccessToken(s.cfg.IdcRefreshURL)
 	if err != nil {
 		c.JSON(503, gin.H{"error": gin.H{"message": err.Error(), "type": "service_unavailable"}})
@@ -81,9 +91,9 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		if streamOptions != nil {
 			includeUsage, _ = streamOptions["include_usage"].(bool)
 		}
-		s.streamChatResponse(c, accessToken, messages, model, profileARN, tools, includeUsage)
+		s.streamChatResponse(c, accessToken, messages, model, profileARN, tools, includeUsage, thinkCfg)
 	} else {
-		s.nonStreamChatResponse(c, accessToken, messages, model, profileARN, tools)
+		s.nonStreamChatResponse(c, accessToken, messages, model, profileARN, tools, thinkCfg)
 	}
 }
 
@@ -108,7 +118,7 @@ func makeChunk(chatID string, created int64, model string, delta map[string]inte
 	return "data: " + string(b) + "\n\n"
 }
 
-func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, includeUsage bool) {
+func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, includeUsage bool, thinkCfg thinking.Config) {
 	chatID := "chatcmpl-" + uuid.New().String()[:24]
 	created := time.Now().Unix()
 	convID := uuid.New().String()
@@ -127,6 +137,11 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 	outputTruncated := false
 	continuationCount := 0
 
+	var parser *thinking.Parser
+	if thinkCfg.Enabled {
+		parser = thinking.NewParser()
+	}
+
 	type activeTool struct {
 		id       string
 		name     string
@@ -135,7 +150,7 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 	var active *activeTool
 
 	doStream := func(msgs []map[string]interface{}) bool {
-		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID)
+		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID, thinkCfg)
 		if err != nil {
 			fmt.Fprintf(w, "data: {\"error\":\"%s\"}\n\n", err.Error())
 			return false
@@ -158,9 +173,23 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 				if content != "" {
 					content = sanitizer.SanitizeText(content, true)
 					if content != "" {
-						streamTextBuf.WriteString(content)
-						chunk := makeChunk(chatID, created, model, map[string]interface{}{"content": content}, nil, nil)
-						fmt.Fprint(w, chunk)
+						if parser != nil {
+							segments := parser.Push(content)
+							for _, seg := range segments {
+								if seg.Type == thinking.SegmentThinking {
+									chunk := makeChunk(chatID, created, model, map[string]interface{}{"reasoning_content": seg.Text}, nil, nil)
+									fmt.Fprint(w, chunk)
+								} else {
+									streamTextBuf.WriteString(seg.Text)
+									chunk := makeChunk(chatID, created, model, map[string]interface{}{"content": seg.Text}, nil, nil)
+									fmt.Fprint(w, chunk)
+								}
+							}
+						} else {
+							streamTextBuf.WriteString(content)
+							chunk := makeChunk(chatID, created, model, map[string]interface{}{"content": content}, nil, nil)
+							fmt.Fprint(w, chunk)
+						}
 						w.(http.Flusher).Flush()
 					}
 				}
@@ -261,6 +290,21 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 				w.(http.Flusher).Flush()
 			}
 		}
+		// Flush parser at stream end
+		if parser != nil {
+			segments := parser.Flush()
+			for _, seg := range segments {
+				if seg.Type == thinking.SegmentThinking {
+					chunk := makeChunk(chatID, created, model, map[string]interface{}{"reasoning_content": seg.Text}, nil, nil)
+					fmt.Fprint(w, chunk)
+				} else {
+					streamTextBuf.WriteString(seg.Text)
+					chunk := makeChunk(chatID, created, model, map[string]interface{}{"content": seg.Text}, nil, nil)
+					fmt.Fprint(w, chunk)
+				}
+			}
+			w.(http.Flusher).Flush()
+		}
 		return true
 	}
 
@@ -314,7 +358,7 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 	w.(http.Flusher).Flush()
 }
 
-func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}) {
+func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, thinkCfg thinking.Config) {
 	chatID := "chatcmpl-" + uuid.New().String()[:24]
 	created := time.Now().Unix()
 	convID := uuid.New().String()
@@ -333,7 +377,7 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 	var active *activeTool
 
 	collectEvents := func(msgs []map[string]interface{}) error {
-		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID)
+		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID, thinkCfg)
 		if err != nil {
 			return err
 		}
@@ -452,6 +496,25 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 	}
 
 	fullText = sanitizer.SanitizeText(strings.Join(textParts, ""), false)
+
+	// Parse thinking from collected text
+	var reasoningContent string
+	if thinkCfg.Enabled && fullText != "" {
+		p := thinking.NewParser()
+		segments := p.Push(fullText)
+		segments = append(segments, p.Flush()...)
+		var thinkParts, textPartsParsed []string
+		for _, seg := range segments {
+			if seg.Type == thinking.SegmentThinking {
+				thinkParts = append(thinkParts, seg.Text)
+			} else {
+				textPartsParsed = append(textPartsParsed, seg.Text)
+			}
+		}
+		reasoningContent = strings.Join(thinkParts, "")
+		fullText = strings.Join(textPartsParsed, "")
+	}
+
 	finishReason := "stop"
 	if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
@@ -467,12 +530,15 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 		"role":    "assistant",
 		"content": msgContent,
 	}
+	if reasoningContent != "" {
+		message["reasoning_content"] = reasoningContent
+	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 	}
 
 	promptTokens := counter.EstimateMessagesTokensJSON(messages)
-	completionTokens := counter.EstimateTokens(fullText)
+	completionTokens := counter.EstimateTokens(fullText) + counter.EstimateTokens(reasoningContent)
 	for _, tc := range toolCalls {
 		if fn, ok := tc["function"].(map[string]interface{}); ok {
 			completionTokens += counter.EstimateTokens(fmt.Sprintf("%v", fn["name"]))

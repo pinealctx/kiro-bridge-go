@@ -8,9 +8,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pinealctx/kiro-bridge-go/config"
+	"github.com/pinealctx/kiro-bridge-go/thinking"
 )
 
 // Client is the CodeWhisperer HTTP client.
@@ -50,9 +52,10 @@ func (c *Client) GenerateStream(
 	profileARN string,
 	tools []map[string]interface{},
 	conversationID string,
+	thinkCfg ...thinking.Config,
 ) (*Reader, io.Closer, error) {
 	cwModel := c.resolveModel(model)
-	cwReq := OpenAIToCW(messages, cwModel, tools, profileARN, conversationID)
+	cwReq := OpenAIToCW(messages, cwModel, tools, profileARN, conversationID, thinkCfg...)
 
 	body, err := json.Marshal(cwReq)
 	if err != nil {
@@ -118,6 +121,8 @@ func (c *Client) GenerateStream(
 }
 
 func (c *Client) resolveModel(model string) string {
+	// Strip -thinking suffix before lookup
+	model = strings.TrimSuffix(model, "-thinking")
 	cwModel, ok := c.cfg.ModelMap[model]
 	if !ok {
 		return model

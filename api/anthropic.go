@@ -14,6 +14,7 @@ import (
 
 	"github.com/pinealctx/kiro-bridge-go/counter"
 	"github.com/pinealctx/kiro-bridge-go/sanitizer"
+	"github.com/pinealctx/kiro-bridge-go/thinking"
 )
 
 func (s *Server) handleMessages(c *gin.Context) {
@@ -55,6 +56,12 @@ func (s *Server) handleMessages(c *gin.Context) {
 
 	log.Printf("messages: model=%s reqHasModel=%v, messages=%d tools=%d stream=%v", model, reqModel, len(openaiMessages), len(tools), stream)
 
+	// Parse thinking config
+	thinkCfg := thinking.ParseConfig(body)
+	if thinkCfg.Enabled {
+		log.Printf("thinking enabled: type=%s budget=%d effort=%s", thinkCfg.Type, thinkCfg.Budget, thinkCfg.Effort)
+	}
+
 	accessToken, err := s.tm.GetAccessToken(s.cfg.IdcRefreshURL)
 	if err != nil {
 		c.JSON(503, gin.H{"type": "service_unavailable", "message": err.Error()})
@@ -64,9 +71,9 @@ func (s *Server) handleMessages(c *gin.Context) {
 	s.client.IsExternalIdP = s.tm.IsExternalIdP
 
 	if stream {
-		s.streamAnthropicResponse(c, accessToken, openaiMessages, model, profileARN, tools, anthropicMessages)
+		s.streamAnthropicResponse(c, accessToken, openaiMessages, model, profileARN, tools, anthropicMessages, thinkCfg)
 	} else {
-		s.nonStreamAnthropicResponse(c, accessToken, openaiMessages, model, profileARN, tools, anthropicMessages)
+		s.nonStreamAnthropicResponse(c, accessToken, openaiMessages, model, profileARN, tools, anthropicMessages, thinkCfg)
 	}
 }
 
@@ -87,7 +94,7 @@ func sseEvent(eventType, data string) string {
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, data)
 }
 
-func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, origMessages []map[string]interface{}) {
+func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, origMessages []map[string]interface{}, thinkCfg thinking.Config) {
 	msgID := "msg_" + uuid.New().String()[:24]
 	created := time.Now().Unix()
 	convID := uuid.New().String()
@@ -111,16 +118,10 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 		},
 	})
 	fmt.Fprint(w, sseEvent("message_start", string(startData)))
-
-	// content_block_start (text block at index 0)
-	cbStart, _ := json.Marshal(map[string]interface{}{
-		"type": "content_block_start", "index": 0,
-		"content_block": map[string]interface{}{"type": "text", "text": ""},
-	})
-	fmt.Fprint(w, sseEvent("content_block_start", string(cbStart)))
 	w.(http.Flusher).Flush()
 
 	var textBuf strings.Builder
+	var thinkBuf strings.Builder
 	var rawRsp strings.Builder
 	var cwRsp strings.Builder
 	var toolCallsSeen []string
@@ -128,7 +129,15 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	contextUsagePercentage := float64(0)
 	continuationCount := 0
 	blockIndex := 0
-	textBlockOpen := true // we already sent content_block_start for text at index 0
+
+	// Thinking state
+	var parser *thinking.Parser
+	if thinkCfg.Enabled {
+		parser = thinking.NewParser()
+	}
+	thinkingBlockOpen := false
+	textBlockOpen := false
+	emittedMeaningfulText := false
 
 	type activeTool struct {
 		id       string
@@ -137,7 +146,15 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	}
 	var active *activeTool
 
-	// closeTextBlock closes the current text block if open
+	closeThinkingBlock := func() {
+		if thinkingBlockOpen {
+			cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
+			fmt.Fprint(w, sseEvent("content_block_stop", string(cbStop)))
+			blockIndex++
+			thinkingBlockOpen = false
+		}
+	}
+
 	closeTextBlock := func() {
 		if textBlockOpen {
 			cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
@@ -147,8 +164,19 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 		}
 	}
 
-	// ensureTextBlock opens a new text block if not already open
+	ensureThinkingBlock := func() {
+		if !thinkingBlockOpen {
+			cbStart, _ := json.Marshal(map[string]interface{}{
+				"type": "content_block_start", "index": blockIndex,
+				"content_block": map[string]interface{}{"type": "thinking", "thinking": ""},
+			})
+			fmt.Fprint(w, sseEvent("content_block_start", string(cbStart)))
+			thinkingBlockOpen = true
+		}
+	}
+
 	ensureTextBlock := func() {
+		closeThinkingBlock()
 		if !textBlockOpen {
 			cbStart, _ := json.Marshal(map[string]interface{}{
 				"type": "content_block_start", "index": blockIndex,
@@ -159,12 +187,47 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 		}
 	}
 
+	emitThinkingDelta := func(text string) {
+		ensureThinkingBlock()
+		thinkBuf.WriteString(text)
+		deltaData, _ := json.Marshal(map[string]interface{}{
+			"type": "content_block_delta", "index": blockIndex,
+			"delta": map[string]interface{}{"type": "thinking_delta", "thinking": text},
+		})
+		fmt.Fprint(w, sseEvent("content_block_delta", string(deltaData)))
+		w.(http.Flusher).Flush()
+	}
+
+	emitTextDelta := func(text string) {
+		ensureTextBlock()
+		textBuf.WriteString(text)
+		if strings.TrimSpace(text) != "" {
+			emittedMeaningfulText = true
+		}
+		deltaData, _ := json.Marshal(map[string]interface{}{
+			"type": "content_block_delta", "index": blockIndex,
+			"delta": map[string]interface{}{"type": "text_delta", "text": text},
+		})
+		fmt.Fprint(w, sseEvent("content_block_delta", string(deltaData)))
+		w.(http.Flusher).Flush()
+	}
+
+	// If thinking is not enabled, open text block immediately (original behavior)
+	if !thinkCfg.Enabled {
+		cbStart, _ := json.Marshal(map[string]interface{}{
+			"type": "content_block_start", "index": 0,
+			"content_block": map[string]interface{}{"type": "text", "text": ""},
+		})
+		fmt.Fprint(w, sseEvent("content_block_start", string(cbStart)))
+		textBlockOpen = true
+	}
+
 	doStream := func(msgs []map[string]interface{}) {
 
 		rawRsp.Reset()
 		cwRsp.Reset()
 
-		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID)
+		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID, thinkCfg)
 		if err != nil {
 			errData, _ := json.Marshal(map[string]interface{}{"type": "error", "error": map[string]interface{}{"type": "api_error", "message": err.Error()}})
 			fmt.Fprint(w, sseEvent("error", string(errData)))
@@ -195,14 +258,18 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 						cwRsp.WriteString(content)
 					}
 					if content != "" {
-						ensureTextBlock()
-						textBuf.WriteString(content)
-						deltaData, _ := json.Marshal(map[string]interface{}{
-							"type": "content_block_delta", "index": blockIndex,
-							"delta": map[string]interface{}{"type": "text_delta", "text": content},
-						})
-						fmt.Fprint(w, sseEvent("content_block_delta", string(deltaData)))
-						w.(http.Flusher).Flush()
+						if parser != nil {
+							segments := parser.Push(content)
+							for _, seg := range segments {
+								if seg.Type == thinking.SegmentThinking {
+									emitThinkingDelta(seg.Text)
+								} else {
+									emitTextDelta(seg.Text)
+								}
+							}
+						} else {
+							emitTextDelta(content)
+						}
 					}
 				}
 
@@ -213,7 +280,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 
 				if isStop {
 					if active != nil && !sanitizer.KiroBuiltinTools[active.name] {
-						// Close text block if open, then emit complete tool_use block
+						closeThinkingBlock()
 						closeTextBlock()
 						cbStart2, _ := json.Marshal(map[string]interface{}{
 							"type": "content_block_start", "index": blockIndex,
@@ -221,7 +288,6 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 						})
 						fmt.Fprint(w, sseEvent("content_block_start", string(cbStart2)))
 
-						// Parse accumulated input and send as complete JSON
 						inputStr := active.inputBuf.String()
 						var inputObj interface{}
 						if inputStr != "" {
@@ -295,6 +361,18 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 				w.(http.Flusher).Flush()
 			}
 		}
+
+		// Flush parser at stream end
+		if parser != nil {
+			segments := parser.Flush()
+			for _, seg := range segments {
+				if seg.Type == thinking.SegmentThinking {
+					emitThinkingDelta(seg.Text)
+				} else {
+					emitTextDelta(seg.Text)
+				}
+			}
+		}
 	}
 
 	doStream(messages)
@@ -333,21 +411,37 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 		}
 	}
 
-	// Close final text block if still open
+	// Handle thinking-only response: add placeholder text block
+	if thinkCfg.Enabled && thinkBuf.Len() > 0 && !emittedMeaningfulText && len(toolCallsSeen) == 0 {
+		closeThinkingBlock()
+		ensureTextBlock()
+		deltaData, _ := json.Marshal(map[string]interface{}{
+			"type": "content_block_delta", "index": blockIndex,
+			"delta": map[string]interface{}{"type": "text_delta", "text": " "},
+		})
+		fmt.Fprint(w, sseEvent("content_block_delta", string(deltaData)))
+		stopReason = "max_tokens"
+	}
+
+	// Close final blocks
+	closeThinkingBlock()
 	closeTextBlock()
 
 	// message_delta
-	stopReason = "end_turn"
+	stopReason2 := "end_turn"
 	if len(toolCallsSeen) > 0 {
-		stopReason = "tool_use"
+		stopReason2 = "tool_use"
 	} else if outputTruncated {
-		stopReason = "max_tokens"
+		stopReason2 = "max_tokens"
+	}
+	if thinkCfg.Enabled && thinkBuf.Len() > 0 && !emittedMeaningfulText && len(toolCallsSeen) == 0 {
+		stopReason2 = "max_tokens"
 	}
 	promptTokens := counter.EstimateMessagesTokensJSON(origMessages)
-	completionTokens := counter.EstimateTokens(textBuf.String())
+	completionTokens := counter.EstimateTokens(textBuf.String()) + counter.EstimateTokens(thinkBuf.String())
 	deltaData, _ := json.Marshal(map[string]interface{}{
 		"type":  "message_delta",
-		"delta": map[string]interface{}{"stop_reason": stopReason, "stop_sequence": nil},
+		"delta": map[string]interface{}{"stop_reason": stopReason2, "stop_sequence": nil},
 		"usage": map[string]interface{}{"output_tokens": completionTokens},
 	})
 	fmt.Fprint(w, sseEvent("message_delta", string(deltaData)))
@@ -364,10 +458,10 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	fmt.Fprint(w, sseEvent("message_stop", string(stopData)))
 	w.(http.Flusher).Flush()
 
-	log.Printf("StreamEnd: outputTruncated: %v, stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f", outputTruncated, stopReason, promptTokens, completionTokens, contextUsagePercentage)
+	log.Printf("StreamEnd: outputTruncated: %v, stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f", outputTruncated, stopReason2, promptTokens, completionTokens, contextUsagePercentage)
 }
 
-func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, origMessages []map[string]interface{}) {
+func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, origMessages []map[string]interface{}, thinkCfg thinking.Config) {
 	msgID := "msg_" + uuid.New().String()[:24]
 	created := time.Now().Unix()
 	convID := uuid.New().String()
@@ -385,7 +479,7 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 	var active *activeTool
 
 	collectEvents := func(msgs []map[string]interface{}) error {
-		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID)
+		reader, closer, err := s.client.GenerateStream(accessToken, msgs, model, profileARN, tools, convID, thinkCfg)
 		if err != nil {
 			return err
 		}
@@ -497,6 +591,24 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 
 	fullText = sanitizer.SanitizeText(strings.Join(textParts, ""), false)
 
+	// Parse thinking from collected text
+	var thinkingText string
+	if thinkCfg.Enabled && fullText != "" {
+		parser := thinking.NewParser()
+		segments := parser.Push(fullText)
+		segments = append(segments, parser.Flush()...)
+		var thinkParts, textPartsParsed []string
+		for _, seg := range segments {
+			if seg.Type == thinking.SegmentThinking {
+				thinkParts = append(thinkParts, seg.Text)
+			} else {
+				textPartsParsed = append(textPartsParsed, seg.Text)
+			}
+		}
+		thinkingText = strings.Join(thinkParts, "")
+		fullText = strings.Join(textPartsParsed, "")
+	}
+
 	stopReason := "end_turn"
 	if len(toolUses) > 0 {
 		stopReason = "tool_use"
@@ -506,8 +618,15 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 
 	// Build content blocks
 	var content []interface{}
+	if thinkingText != "" {
+		content = append(content, map[string]interface{}{"type": "thinking", "thinking": thinkingText})
+	}
 	if fullText != "" {
 		content = append(content, map[string]interface{}{"type": "text", "text": fullText})
+	} else if thinkingText != "" && len(toolUses) == 0 {
+		// Thinking-only response: add placeholder text block
+		content = append(content, map[string]interface{}{"type": "text", "text": " "})
+		stopReason = "max_tokens"
 	}
 	for _, tu := range toolUses {
 		content = append(content, tu)
@@ -517,7 +636,7 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 	}
 
 	promptTokens := counter.EstimateMessagesTokensJSON(origMessages)
-	completionTokens := counter.EstimateTokens(fullText)
+	completionTokens := counter.EstimateTokens(fullText) + counter.EstimateTokens(thinkingText)
 
 	if s.cfg.Debug {
 		contentBin, _ := json.MarshalIndent(content, "", "  ")
@@ -577,6 +696,7 @@ func anthropicMessagesToOpenAI(messages []map[string]interface{}, system interfa
 		if role == "assistant" {
 			if blocks, ok := content.([]interface{}); ok {
 				var textParts []string
+				var thinkingParts []string
 				var toolCalls []interface{}
 				for _, block := range blocks {
 					b, ok := block.(map[string]interface{})
@@ -589,7 +709,11 @@ func anthropicMessagesToOpenAI(messages []map[string]interface{}, system interfa
 							textParts = append(textParts, t)
 						}
 					case "thinking":
-						// skip
+						if t, ok := b["thinking"].(string); ok {
+							thinkingParts = append(thinkingParts, t)
+						}
+					case "redacted_thinking":
+						// skip redacted thinking
 					case "tool_use":
 						inputJSON, _ := json.Marshal(b["input"])
 						toolCalls = append(toolCalls, map[string]interface{}{
@@ -602,9 +726,16 @@ func anthropicMessagesToOpenAI(messages []map[string]interface{}, system interfa
 						})
 					}
 				}
+				// Wrap thinking in tags for CW history preservation
+				var combinedText string
+				if len(thinkingParts) > 0 {
+					combinedText = "<thinking>" + strings.Join(thinkingParts, "") + "</thinking>\n" + strings.Join(textParts, "\n")
+				} else {
+					combinedText = strings.Join(textParts, "\n")
+				}
 				openaiMsg := map[string]interface{}{
 					"role":    "assistant",
-					"content": strings.Join(textParts, "\n"),
+					"content": combinedText,
 				}
 				if len(toolCalls) > 0 {
 					openaiMsg["tool_calls"] = toolCalls

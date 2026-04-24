@@ -6,10 +6,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pinealctx/kiro-bridge-go/sanitizer"
+	"github.com/pinealctx/kiro-bridge-go/thinking"
 )
 
 // OpenAIToCW converts an OpenAI ChatCompletion request to CodeWhisperer format.
-func OpenAIToCW(messages []map[string]interface{}, model string, tools []map[string]interface{}, profileARN, conversationID string) map[string]interface{} {
+func OpenAIToCW(messages []map[string]interface{}, model string, tools []map[string]interface{}, profileARN, conversationID string, thinkCfg ...thinking.Config) map[string]interface{} {
 
 	if conversationID == "" {
 		conversationID = newUUID()
@@ -60,6 +61,12 @@ func OpenAIToCW(messages []map[string]interface{}, model string, tools []map[str
 
 	// Inject anti-prompt as first user-assistant pair
 	userSystem := strings.Join(systemParts, "\n")
+	// Inject thinking hint if enabled
+	var tc thinking.Config
+	if len(thinkCfg) > 0 {
+		tc = thinkCfg[0]
+	}
+	userSystem = thinking.InjectHint(userSystem, tc)
 	finalSystem := sanitizer.BuildSystemPrompt(userSystem, len(tools) > 0)
 	history = append(history, map[string]interface{}{
 		"userInputMessage": map[string]interface{}{
