@@ -59,7 +59,7 @@ func (s *Server) handleMessages(c *gin.Context) {
 	// Parse thinking config
 	thinkCfg := thinking.ParseConfig(body)
 	if thinkCfg.Enabled {
-		log.Printf("thinking enabled: type=%s budget=%d effort=%s", thinkCfg.Type, thinkCfg.Budget, thinkCfg.Effort)
+		log.Printf("\033[33mthinking enabled: type=%s budget=%d effort=%s\033[0m", thinkCfg.Type, thinkCfg.Budget, thinkCfg.Effort)
 	}
 
 	accessToken, err := s.tm.GetAccessToken(s.cfg.IdcRefreshURL)
