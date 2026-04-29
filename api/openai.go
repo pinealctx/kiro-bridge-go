@@ -275,7 +275,7 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 
 			case "contextUsageEvent":
 				pct, _ := msg.Payload["contextUsagePercentage"].(float64)
-				if pct > 0.95 {
+				if pct > 95 {
 					outputTruncated = true
 				}
 
@@ -447,7 +447,7 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 
 			case "contextUsageEvent":
 				pct, _ := msg.Payload["contextUsagePercentage"].(float64)
-				if pct > 0.95 {
+				if pct > 95 {
 					outputTruncated = true
 				}
 
