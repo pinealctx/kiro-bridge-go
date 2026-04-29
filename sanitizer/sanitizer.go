@@ -101,7 +101,10 @@ func SanitizeText(text string, isChunk bool) string {
 				filtered = append(filtered, line)
 			}
 		}
-		text = strings.Join(filtered, "\n")
+		result := strings.Join(filtered, "\n")
+		if strings.TrimSpace(result) != "" {
+			text = result
+		}
 	}
 	text = excessiveNewlines.ReplaceAllString(text, "\n\n")
 	if !isChunk {
