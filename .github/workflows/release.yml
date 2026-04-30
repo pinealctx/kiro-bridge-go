@@ -18,7 +18,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build binaries
+      - name: Build and package binaries
         run: |
           VERSION=${GITHUB_REF_NAME}
           LDFLAGS="-s -w -X main.Version=${VERSION}"
@@ -29,16 +29,23 @@ jobs:
             "darwin/arm64"
             "windows/amd64"
           )
-          mkdir -p dist
+          mkdir -p build dist
           for target in "${TARGETS[@]}"; do
             GOOS="${target%/*}"
             GOARCH="${target#*/}"
-            output="kiro-bridge-${GOOS}-${GOARCH}"
+            bin="kiro-bridge"
+            archive="kiro-bridge-${GOOS}-${GOARCH}"
             if [ "$GOOS" = "windows" ]; then
-              output="${output}.exe"
+              bin="${bin}.exe"
             fi
-            echo "Building ${output}..."
-            GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o "dist/${output}" .
+            echo "Building ${archive}..."
+            GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o "build/${bin}" .
+            if [ "$GOOS" = "windows" ]; then
+              (cd build && zip "../dist/${archive}.zip" "${bin}")
+            else
+              tar -czf "dist/${archive}.tar.gz" -C build "${bin}"
+            fi
+            rm "build/${bin}"
           done
 
       - name: Create checksums
