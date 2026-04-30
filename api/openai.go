@@ -133,6 +133,9 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 
 	var streamTextBuf strings.Builder
 	var toolCallsSeen []string
+	var filteredBuiltinTools []string
+	var remappedBuiltinTools []string
+	clientToolNames := sanitizer.ClientToolNameSet(tools)
 	toolCallIndex := 0
 	outputTruncated := false
 	continuationCount := 0
@@ -200,35 +203,57 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 				isStop, _ := msg.Payload["stop"].(bool)
 
 				if isStop {
-					if active != nil && !sanitizer.KiroBuiltinTools[active.name] {
-						inputStr := active.inputBuf.String()
-						var inputObj interface{}
-						if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
-							inputObj = map[string]interface{}{"raw": inputStr}
-						}
-						arguments, _ := json.Marshal(inputObj)
-						argStr := string(arguments)
+					if active != nil {
+						emitToolCall := !sanitizer.KiroBuiltinTools[active.name]
 
-						// Emit name chunk
-						tcBase := map[string]interface{}{
-							"index": toolCallIndex, "id": active.id, "type": "function",
-							"function": map[string]interface{}{"name": active.name, "arguments": ""},
-						}
-						fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcBase}}, nil, nil))
-						// Emit arguments in 40-char chunks
-						for i := 0; i < len(argStr); i += 40 {
-							end := i + 40
-							if end > len(argStr) {
-								end = len(argStr)
+						if sanitizer.KiroBuiltinTools[active.name] {
+							inputStr := active.inputBuf.String()
+							var kiroInput interface{}
+							if inputStr != "" {
+								json.Unmarshal([]byte(inputStr), &kiroInput)
 							}
-							tcArgs := map[string]interface{}{
-								"index":    toolCallIndex,
-								"function": map[string]interface{}{"arguments": argStr[i:end]},
+							if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(active.name, kiroInput, clientToolNames); ok {
+								log.Printf("\033[36m[remap] builtin tool %s → %s (id=%s)\033[0m", active.name, remappedName, active.id)
+								active.name = remappedName
+								active.inputBuf.Reset()
+								remappedJSON, _ := json.Marshal(remappedInput)
+								active.inputBuf.Write(remappedJSON)
+								remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+								emitToolCall = true
+							} else {
+								log.Printf("\033[33m[filter] builtin tool %s dropped (no client tool match, id=%s)\033[0m", active.name, active.id)
+								filteredBuiltinTools = append(filteredBuiltinTools, active.name)
 							}
-							fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcArgs}}, nil, nil))
 						}
-						toolCallsSeen = append(toolCallsSeen, active.name)
-						toolCallIndex++
+
+						if emitToolCall {
+							inputStr := active.inputBuf.String()
+							var inputObj interface{}
+							if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
+								inputObj = map[string]interface{}{"raw": inputStr}
+							}
+							arguments, _ := json.Marshal(inputObj)
+							argStr := string(arguments)
+
+							tcBase := map[string]interface{}{
+								"index": toolCallIndex, "id": active.id, "type": "function",
+								"function": map[string]interface{}{"name": active.name, "arguments": ""},
+							}
+							fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcBase}}, nil, nil))
+							for i := 0; i < len(argStr); i += 40 {
+								end := i + 40
+								if end > len(argStr) {
+									end = len(argStr)
+								}
+								tcArgs := map[string]interface{}{
+									"index":    toolCallIndex,
+									"function": map[string]interface{}{"arguments": argStr[i:end]},
+								}
+								fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcArgs}}, nil, nil))
+							}
+							toolCallsSeen = append(toolCallsSeen, active.name)
+							toolCallIndex++
+						}
 					}
 					active = nil
 					w.(http.Flusher).Flush()
@@ -245,6 +270,39 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 				name, _ := msg.Payload["name"].(string)
 				toolUseID, _ := msg.Payload["toolUseId"].(string)
 				if sanitizer.KiroBuiltinTools[name] {
+					toolInput := msg.Payload["input"]
+					if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(name, toolInput, clientToolNames); ok {
+						log.Printf("\033[36m[remap] builtin toolUse %s → %s (id=%s)\033[0m", name, remappedName, toolUseID)
+						remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+						name = remappedName
+						arguments, _ := json.Marshal(remappedInput)
+						argStr := string(arguments)
+						if toolUseID == "" {
+							toolUseID = "call_" + uuid.New().String()[:24]
+						}
+						tcBase := map[string]interface{}{
+							"index": toolCallIndex, "id": toolUseID, "type": "function",
+							"function": map[string]interface{}{"name": name, "arguments": ""},
+						}
+						fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcBase}}, nil, nil))
+						for i := 0; i < len(argStr); i += 40 {
+							end := i + 40
+							if end > len(argStr) {
+								end = len(argStr)
+							}
+							tcArgs := map[string]interface{}{
+								"index":    toolCallIndex,
+								"function": map[string]interface{}{"arguments": argStr[i:end]},
+							}
+							fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcArgs}}, nil, nil))
+						}
+						toolCallsSeen = append(toolCallsSeen, name)
+						toolCallIndex++
+						w.(http.Flusher).Flush()
+						continue
+					}
+					log.Printf("\033[33m[filter] builtin toolUse %s dropped (no client tool match, id=%s)\033[0m", name, toolUseID)
+					filteredBuiltinTools = append(filteredBuiltinTools, name)
 					continue
 				}
 				toolInput := msg.Payload["input"]
@@ -341,6 +399,9 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 	} else if outputTruncated {
 		finishReason = "length"
 	}
+	if len(remappedBuiltinTools) > 0 || len(filteredBuiltinTools) > 0 {
+		log.Printf("\033[36m[remap-summary] remapped=%v filtered=%v clientTools=%d\033[0m", remappedBuiltinTools, filteredBuiltinTools, len(clientToolNames))
+	}
 	fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{}, &finishReason, nil))
 
 	if includeUsage {
@@ -365,6 +426,9 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 
 	var textParts []string
 	var toolCalls []map[string]interface{}
+	var filteredBuiltinTools []string
+	var remappedBuiltinTools []string
+	clientToolNames := sanitizer.ClientToolNameSet(tools)
 	toolCallIndex := 0
 	outputTruncated := false
 	continuationCount := 0
@@ -405,18 +469,42 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 				isStop, _ := msg.Payload["stop"].(bool)
 
 				if isStop {
-					if active != nil && !sanitizer.KiroBuiltinTools[active.name] {
-						inputStr := active.inputBuf.String()
-						var inputObj interface{}
-						if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
-							inputObj = map[string]interface{}{"raw": inputStr}
+					if active != nil {
+						emitToolCall := !sanitizer.KiroBuiltinTools[active.name]
+
+						if sanitizer.KiroBuiltinTools[active.name] {
+							inputStr := active.inputBuf.String()
+							var kiroInput interface{}
+							if inputStr != "" {
+								json.Unmarshal([]byte(inputStr), &kiroInput)
+							}
+							if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(active.name, kiroInput, clientToolNames); ok {
+								log.Printf("\033[36m[remap] builtin tool %s → %s (id=%s)\033[0m", active.name, remappedName, active.id)
+								active.name = remappedName
+								active.inputBuf.Reset()
+								remappedJSON, _ := json.Marshal(remappedInput)
+								active.inputBuf.Write(remappedJSON)
+								remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+								emitToolCall = true
+							} else {
+								log.Printf("\033[33m[filter] builtin tool %s dropped (no client tool match, id=%s)\033[0m", active.name, active.id)
+								filteredBuiltinTools = append(filteredBuiltinTools, active.name)
+							}
 						}
-						arguments, _ := json.Marshal(inputObj)
-						toolCalls = append(toolCalls, map[string]interface{}{
-							"index": toolCallIndex, "id": active.id, "type": "function",
-							"function": map[string]interface{}{"name": active.name, "arguments": string(arguments)},
-						})
-						toolCallIndex++
+
+						if emitToolCall {
+							inputStr := active.inputBuf.String()
+							var inputObj interface{}
+							if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
+								inputObj = map[string]interface{}{"raw": inputStr}
+							}
+							arguments, _ := json.Marshal(inputObj)
+							toolCalls = append(toolCalls, map[string]interface{}{
+								"index": toolCallIndex, "id": active.id, "type": "function",
+								"function": map[string]interface{}{"name": active.name, "arguments": string(arguments)},
+							})
+							toolCallIndex++
+						}
 					}
 					active = nil
 					continue
@@ -432,6 +520,23 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 				name, _ := msg.Payload["name"].(string)
 				toolUseID, _ := msg.Payload["toolUseId"].(string)
 				if sanitizer.KiroBuiltinTools[name] {
+					toolInput := msg.Payload["input"]
+					if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(name, toolInput, clientToolNames); ok {
+						log.Printf("\033[36m[remap] builtin toolUse %s → %s (id=%s)\033[0m", name, remappedName, toolUseID)
+						remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+						if toolUseID == "" {
+							toolUseID = "call_" + uuid.New().String()[:24]
+						}
+						arguments, _ := json.Marshal(remappedInput)
+						toolCalls = append(toolCalls, map[string]interface{}{
+							"index": toolCallIndex, "id": toolUseID, "type": "function",
+							"function": map[string]interface{}{"name": remappedName, "arguments": string(arguments)},
+						})
+						toolCallIndex++
+					} else {
+						log.Printf("\033[33m[filter] builtin toolUse %s dropped (no client tool match, id=%s)\033[0m", name, toolUseID)
+						filteredBuiltinTools = append(filteredBuiltinTools, name)
+					}
 					continue
 				}
 				toolInput := msg.Payload["input"]
@@ -520,6 +625,9 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 		finishReason = "tool_calls"
 	} else if outputTruncated {
 		finishReason = "length"
+	}
+	if len(remappedBuiltinTools) > 0 || len(filteredBuiltinTools) > 0 {
+		log.Printf("\033[36m[remap-summary] remapped=%v filtered=%v clientTools=%d\033[0m", remappedBuiltinTools, filteredBuiltinTools, len(clientToolNames))
 	}
 
 	var msgContent interface{} = fullText

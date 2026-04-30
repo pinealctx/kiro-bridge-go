@@ -125,6 +125,9 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	var rawRsp strings.Builder
 	var cwRsp strings.Builder
 	var toolCallsSeen []string
+	var filteredBuiltinTools []string
+	var remappedBuiltinTools []string
+	clientToolNames := sanitizer.ClientToolNameSet(tools)
 	outputTruncated := false
 	contextUsagePercentage := float64(0)
 	continuationCount := 0
@@ -279,47 +282,72 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 				isStop, _ := msg.Payload["stop"].(bool)
 
 				if isStop {
-					if active != nil && !sanitizer.KiroBuiltinTools[active.name] {
-						closeThinkingBlock()
-						closeTextBlock()
-						cbStart2, _ := json.Marshal(map[string]interface{}{
-							"type": "content_block_start", "index": blockIndex,
-							"content_block": map[string]interface{}{"type": "tool_use", "id": active.id, "name": active.name, "input": map[string]interface{}{}},
-						})
-						fmt.Fprint(w, sseEvent("content_block_start", string(cbStart2)))
+					if active != nil {
+						emitToolCall := !sanitizer.KiroBuiltinTools[active.name]
 
-						inputStr := active.inputBuf.String()
-						var inputObj interface{}
-						if inputStr != "" {
-							if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
-								inputObj = map[string]interface{}{"raw": inputStr}
+						// Try remapping Kiro builtin tools to client tools
+						if sanitizer.KiroBuiltinTools[active.name] {
+							inputStr := active.inputBuf.String()
+							var kiroInput interface{}
+							if inputStr != "" {
+								json.Unmarshal([]byte(inputStr), &kiroInput)
 							}
-						} else {
-							inputObj = map[string]interface{}{}
-						}
-						inputJSON, _ := json.Marshal(inputObj)
-						if s.cfg.Debug {
-							prettyJson, inerr := json.MarshalIndent(inputObj, "", "  ")
-							rawRsp.WriteString("name: " + active.name + "\n")
-							cwRsp.WriteString("name: " + active.name + "\n")
-							if inerr == nil {
-								rawRsp.Write(prettyJson)
-								cwRsp.Write(prettyJson)
+							if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(active.name, kiroInput, clientToolNames); ok {
+								log.Printf("\033[36m[remap] builtin tool %s → %s (id=%s)\033[0m", active.name, remappedName, active.id)
+								active.name = remappedName
+								active.inputBuf.Reset()
+								remappedJSON, _ := json.Marshal(remappedInput)
+								active.inputBuf.Write(remappedJSON)
+								remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+								emitToolCall = true
 							} else {
-								rawRsp.Write(inputJSON)
-								cwRsp.Write(inputJSON)
+								log.Printf("\033[33m[filter] builtin tool %s dropped (no client tool match, id=%s)\033[0m", active.name, active.id)
+								filteredBuiltinTools = append(filteredBuiltinTools, active.name)
 							}
 						}
-						deltaData, _ := json.Marshal(map[string]interface{}{
-							"type": "content_block_delta", "index": blockIndex,
-							"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": string(inputJSON)},
-						})
-						fmt.Fprint(w, sseEvent("content_block_delta", string(deltaData)))
 
-						cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
-						fmt.Fprint(w, sseEvent("content_block_stop", string(cbStop)))
-						toolCallsSeen = append(toolCallsSeen, active.name)
-						blockIndex++
+						if emitToolCall {
+							closeThinkingBlock()
+							closeTextBlock()
+							cbStart2, _ := json.Marshal(map[string]interface{}{
+								"type": "content_block_start", "index": blockIndex,
+								"content_block": map[string]interface{}{"type": "tool_use", "id": active.id, "name": active.name, "input": map[string]interface{}{}},
+							})
+							fmt.Fprint(w, sseEvent("content_block_start", string(cbStart2)))
+
+							inputStr := active.inputBuf.String()
+							var inputObj interface{}
+							if inputStr != "" {
+								if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
+									inputObj = map[string]interface{}{"raw": inputStr}
+								}
+							} else {
+								inputObj = map[string]interface{}{}
+							}
+							inputJSON, _ := json.Marshal(inputObj)
+							if s.cfg.Debug {
+								prettyJson, inerr := json.MarshalIndent(inputObj, "", "  ")
+								rawRsp.WriteString("name: " + active.name + "\n")
+								cwRsp.WriteString("name: " + active.name + "\n")
+								if inerr == nil {
+									rawRsp.Write(prettyJson)
+									cwRsp.Write(prettyJson)
+								} else {
+									rawRsp.Write(inputJSON)
+									cwRsp.Write(inputJSON)
+								}
+							}
+							deltaData, _ := json.Marshal(map[string]interface{}{
+								"type": "content_block_delta", "index": blockIndex,
+								"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": string(inputJSON)},
+							})
+							fmt.Fprint(w, sseEvent("content_block_delta", string(deltaData)))
+
+							cbStop, _ := json.Marshal(map[string]interface{}{"type": "content_block_stop", "index": blockIndex})
+							fmt.Fprint(w, sseEvent("content_block_stop", string(cbStop)))
+							toolCallsSeen = append(toolCallsSeen, active.name)
+							blockIndex++
+						}
 					}
 					active = nil
 					w.(http.Flusher).Flush()
@@ -331,6 +359,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 				if inputFrag, ok := msg.Payload["input"].(string); ok && active != nil {
 					active.inputBuf.WriteString(inputFrag)
 				}
+
 
 			case "contextUsageEvent":
 				pct, _ := msg.Payload["contextUsagePercentage"].(float64)
@@ -389,6 +418,9 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 		log.Printf("cw  streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", continuationCount, outputTruncated, stopReason, cwRsp.String())
 	} else {
 		log.Printf("finish streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s", continuationCount, outputTruncated, stopReason)
+	}
+	if len(remappedBuiltinTools) > 0 || len(filteredBuiltinTools) > 0 {
+		log.Printf("\033[36m[remap-summary] remapped=%v filtered=%v clientTools=%d\033[0m", remappedBuiltinTools, filteredBuiltinTools, len(clientToolNames))
 	}
 
 	// Auto-continuation
@@ -468,6 +500,9 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 
 	var textParts []string
 	var toolUses []map[string]interface{}
+	var filteredBuiltinTools []string
+	var remappedBuiltinTools []string
+	clientToolNames := sanitizer.ClientToolNameSet(tools)
 	outputTruncated := false
 	continuationCount := 0
 
@@ -507,18 +542,42 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 				isStop, _ := msg.Payload["stop"].(bool)
 
 				if isStop {
-					if active != nil && !sanitizer.KiroBuiltinTools[active.name] {
-						inputStr := active.inputBuf.String()
-						var inputObj interface{}
-						if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
-							inputObj = map[string]interface{}{}
+					if active != nil {
+						shouldEmit := !sanitizer.KiroBuiltinTools[active.name]
+
+						if sanitizer.KiroBuiltinTools[active.name] {
+							inputStr := active.inputBuf.String()
+							var kiroInput interface{}
+							if inputStr != "" {
+								json.Unmarshal([]byte(inputStr), &kiroInput)
+							}
+							if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(active.name, kiroInput, clientToolNames); ok {
+								log.Printf("\033[36m[remap] builtin tool %s → %s (id=%s)\033[0m", active.name, remappedName, active.id)
+								active.name = remappedName
+								active.inputBuf.Reset()
+								remappedJSON, _ := json.Marshal(remappedInput)
+								active.inputBuf.Write(remappedJSON)
+								remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+								shouldEmit = true
+							} else {
+								log.Printf("\033[33m[filter] builtin tool %s dropped (no client tool match, id=%s)\033[0m", active.name, active.id)
+								filteredBuiltinTools = append(filteredBuiltinTools, active.name)
+							}
 						}
-						toolUses = append(toolUses, map[string]interface{}{
-							"type":  "tool_use",
-							"id":    active.id,
-							"name":  active.name,
-							"input": inputObj,
-						})
+
+						if shouldEmit {
+							inputStr := active.inputBuf.String()
+							var inputObj interface{}
+							if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
+								inputObj = map[string]interface{}{}
+							}
+							toolUses = append(toolUses, map[string]interface{}{
+								"type":  "tool_use",
+								"id":    active.id,
+								"name":  active.name,
+								"input": inputObj,
+							})
+						}
 					}
 					active = nil
 					continue
@@ -534,6 +593,23 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 				name, _ := msg.Payload["name"].(string)
 				toolUseID, _ := msg.Payload["toolUseId"].(string)
 				if sanitizer.KiroBuiltinTools[name] {
+					toolInput := msg.Payload["input"]
+					if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(name, toolInput, clientToolNames); ok {
+						log.Printf("\033[36m[remap] builtin toolUse %s → %s (id=%s)\033[0m", name, remappedName, toolUseID)
+						remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+						if toolUseID == "" {
+							toolUseID = "toolu_" + uuid.New().String()[:24]
+						}
+						toolUses = append(toolUses, map[string]interface{}{
+							"type":  "tool_use",
+							"id":    toolUseID,
+							"name":  remappedName,
+							"input": remappedInput,
+						})
+					} else {
+						log.Printf("\033[33m[filter] builtin toolUse %s dropped (no client tool match, id=%s)\033[0m", name, toolUseID)
+						filteredBuiltinTools = append(filteredBuiltinTools, name)
+					}
 					continue
 				}
 				toolInput := msg.Payload["input"]
@@ -643,6 +719,9 @@ func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, 
 		log.Printf("receive non-stream response: msgID: %v, stopReason: %v, content: %s", msgID, stopReason, string(contentBin))
 	} else {
 		log.Printf("receive non-stream response: msgID: %v, stopReason: %v, content length: %d chars", msgID, stopReason, len(fullText))
+	}
+	if len(remappedBuiltinTools) > 0 || len(filteredBuiltinTools) > 0 {
+		log.Printf("\033[36m[remap-summary] remapped=%v filtered=%v clientTools=%d\033[0m", remappedBuiltinTools, filteredBuiltinTools, len(clientToolNames))
 	}
 
 	c.JSON(200, gin.H{
