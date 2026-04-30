@@ -63,9 +63,9 @@ func (s *Server) handleMessages(c *gin.Context) {
 	}
 
 	if s.cfg.Debug {
-		log.Printf("Claude code Request, model=%s reqHasModel=%v", model, reqModel)
-	} else {
 		log.Printf("Claude code Request, model=%s reqHasModel=%v, raw body: %s", model, reqModel, string(bodyBin))
+	} else {
+		log.Printf("Claude code Request, model=%s reqHasModel=%v", model, reqModel)
 	}
 
 	// Parse thinking config
@@ -375,7 +375,6 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 			case "contextUsageEvent":
 				pct, _ := msg.Payload["contextUsagePercentage"].(float64)
 				contextUsagePercentage = pct
-				log.Printf("convID: %s, contextUsagePercentage is %v", convID, contextUsagePercentage)
 				if pct > 95 {
 					outputTruncated = true
 				}
@@ -425,10 +424,10 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	}
 
 	if s.cfg.Debug {
-		log.Printf("raw streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", continuationCount, outputTruncated, stopReason, rawRsp.String())
-		//log.Printf("cw  streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", continuationCount, outputTruncated, stopReason, cwRsp.String())
+		log.Printf("raw streaming response, convID: %s, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", convID, continuationCount, outputTruncated, stopReason, rawRsp.String())
+		//log.Printf("cw  streaming response, convID: %s, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", convID, continuationCount, outputTruncated, stopReason, cwRsp.String())
 	} else {
-		log.Printf("finish streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s", continuationCount, outputTruncated, stopReason)
+		log.Printf("finish streaming response, convID: %s, continuationCount: %d, outputTruncated: %v, stopReason: %s", convID, continuationCount, outputTruncated, stopReason)
 	}
 	if len(remappedBuiltinTools) > 0 || len(filteredBuiltinTools) > 0 {
 		log.Printf("\033[36m[remap-summary] remapped=%v filtered=%v clientTools=%d\033[0m", remappedBuiltinTools, filteredBuiltinTools, len(clientToolNames))
@@ -501,7 +500,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	fmt.Fprint(w, sseEvent("message_stop", string(stopData)))
 	w.(http.Flusher).Flush()
 
-	log.Printf("StreamEnd: outputTruncated: %v, stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f", outputTruncated, stopReason2, promptTokens, completionTokens, contextUsagePercentage)
+	log.Printf("StreamEnd: convID: %s, outputTruncated: %v, stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f", convID, outputTruncated, stopReason2, promptTokens, completionTokens, contextUsagePercentage)
 }
 
 func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, origMessages []map[string]interface{}, thinkCfg thinking.Config) {
