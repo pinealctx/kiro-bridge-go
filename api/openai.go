@@ -348,6 +348,64 @@ func (s *Server) streamChatResponse(c *gin.Context, accessToken string, messages
 				w.(http.Flusher).Flush()
 			}
 		}
+
+		// Flush active tool if stream ended without a stop event
+		if active != nil {
+			log.Printf("\033[33m[flush-active] stream ended with pending tool: %s (id=%s), emitting\033[0m", active.name, active.id)
+			emitToolCall := !sanitizer.KiroBuiltinTools[active.name]
+
+			if sanitizer.KiroBuiltinTools[active.name] {
+				inputStr := active.inputBuf.String()
+				var kiroInput interface{}
+				if inputStr != "" {
+					json.Unmarshal([]byte(inputStr), &kiroInput)
+				}
+				if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(active.name, kiroInput, clientToolNames); ok {
+					log.Printf("\033[36m[remap] builtin tool %s → %s (id=%s)\033[0m", active.name, remappedName, active.id)
+					active.name = remappedName
+					active.inputBuf.Reset()
+					remappedJSON, _ := json.Marshal(remappedInput)
+					active.inputBuf.Write(remappedJSON)
+					remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+					emitToolCall = true
+				} else {
+					log.Printf("\033[33m[filter] builtin tool %s dropped (no client tool match, id=%s)\033[0m", active.name, active.id)
+					filteredBuiltinTools = append(filteredBuiltinTools, active.name)
+				}
+			}
+
+			if emitToolCall {
+				inputStr := active.inputBuf.String()
+				var inputObj interface{}
+				if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
+					inputObj = map[string]interface{}{"raw": inputStr}
+				}
+				arguments, _ := json.Marshal(inputObj)
+				argStr := string(arguments)
+
+				tcBase := map[string]interface{}{
+					"index": toolCallIndex, "id": active.id, "type": "function",
+					"function": map[string]interface{}{"name": active.name, "arguments": ""},
+				}
+				fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcBase}}, nil, nil))
+				for i := 0; i < len(argStr); i += 40 {
+					end := i + 40
+					if end > len(argStr) {
+						end = len(argStr)
+					}
+					tcArgs := map[string]interface{}{
+						"index":    toolCallIndex,
+						"function": map[string]interface{}{"arguments": argStr[i:end]},
+					}
+					fmt.Fprint(w, makeChunk(chatID, created, model, map[string]interface{}{"tool_calls": []interface{}{tcArgs}}, nil, nil))
+				}
+				toolCallsSeen = append(toolCallsSeen, active.name)
+				toolCallIndex++
+				w.(http.Flusher).Flush()
+			}
+			active = nil
+		}
+
 		// Flush parser at stream end
 		if parser != nil {
 			segments := parser.Flush()
@@ -565,6 +623,48 @@ func (s *Server) nonStreamChatResponse(c *gin.Context, accessToken string, messa
 				return fmt.Errorf("CodeWhisperer error: %s", errMsg)
 			}
 		}
+
+		// Flush active tool if stream ended without a stop event
+		if active != nil {
+			log.Printf("\033[33m[flush-active] collectEvents ended with pending tool: %s (id=%s)\033[0m", active.name, active.id)
+			emitToolCall := !sanitizer.KiroBuiltinTools[active.name]
+
+			if sanitizer.KiroBuiltinTools[active.name] {
+				inputStr := active.inputBuf.String()
+				var kiroInput interface{}
+				if inputStr != "" {
+					json.Unmarshal([]byte(inputStr), &kiroInput)
+				}
+				if remappedName, remappedInput, ok := sanitizer.RemapBuiltinTool(active.name, kiroInput, clientToolNames); ok {
+					log.Printf("\033[36m[remap] builtin tool %s → %s (id=%s)\033[0m", active.name, remappedName, active.id)
+					active.name = remappedName
+					active.inputBuf.Reset()
+					remappedJSON, _ := json.Marshal(remappedInput)
+					active.inputBuf.Write(remappedJSON)
+					remappedBuiltinTools = append(remappedBuiltinTools, remappedName)
+					emitToolCall = true
+				} else {
+					log.Printf("\033[33m[filter] builtin tool %s dropped (no client tool match, id=%s)\033[0m", active.name, active.id)
+					filteredBuiltinTools = append(filteredBuiltinTools, active.name)
+				}
+			}
+
+			if emitToolCall {
+				inputStr := active.inputBuf.String()
+				var inputObj interface{}
+				if json.Unmarshal([]byte(inputStr), &inputObj) != nil {
+					inputObj = map[string]interface{}{"raw": inputStr}
+				}
+				arguments, _ := json.Marshal(inputObj)
+				toolCalls = append(toolCalls, map[string]interface{}{
+					"index": toolCallIndex, "id": active.id, "type": "function",
+					"function": map[string]interface{}{"name": active.name, "arguments": string(arguments)},
+				})
+				toolCallIndex++
+			}
+			active = nil
+		}
+
 		return nil
 	}
 
