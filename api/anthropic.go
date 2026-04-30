@@ -237,6 +237,8 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 		textBlockOpen = true
 	}
 
+	totalEventCount := 0
+
 	doStream := func(msgs []map[string]interface{}) {
 
 		rawRsp.Reset()
@@ -259,6 +261,17 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 			if err != nil {
 				log.Printf("stream read error: %v", err)
 				break
+			}
+			totalEventCount++
+
+			if s.cfg.Debug {
+				switch msg.EventType {
+				case "assistantResponseEvent":
+				case "contextUsageEvent":
+				default:
+					payloadBin, _ := json.Marshal(msg.Payload)
+					log.Printf("[event] #%d type=%s payload=%s", totalEventCount, msg.EventType, string(payloadBin))
+				}
 			}
 
 			switch msg.EventType {
@@ -500,7 +513,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 	fmt.Fprint(w, sseEvent("message_stop", string(stopData)))
 	w.(http.Flusher).Flush()
 
-	log.Printf("StreamEnd: convID: %s, outputTruncated: %v, stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f", convID, outputTruncated, stopReason2, promptTokens, completionTokens, contextUsagePercentage)
+	log.Printf("StreamEnd: convID: %s, outputTruncated: %v, stopReason: %s, inputTokenCount: %v, outputTokenCount: %v, contextUsagePercentage: %.3f, events: %d", convID, outputTruncated, stopReason2, promptTokens, completionTokens, contextUsagePercentage, totalEventCount)
 }
 
 func (s *Server) nonStreamAnthropicResponse(c *gin.Context, accessToken string, messages []map[string]interface{}, model, profileARN string, tools []map[string]interface{}, origMessages []map[string]interface{}, thinkCfg thinking.Config) {
