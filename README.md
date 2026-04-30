@@ -1,75 +1,80 @@
 # Kiro Bridge (Go)
 
-Kiro Bridge 是一个 API 网关，将 Kiro CLI 的 CodeWhisperer 后端封装为标准的 OpenAI 和 Anthropic 兼容 API 接口。单一 Go 二进制文件，无运行时依赖。
+[中文文档](README_zh.md)
 
-## 工作原理
+Kiro Bridge is an API gateway that wraps Kiro CLI's CodeWhisperer backend into standard OpenAI and Anthropic-compatible API endpoints. Single Go binary, no runtime dependencies.
+
+## How It Works
 
 ```
-客户端 (OpenAI/Anthropic 格式)
+Client (OpenAI / Anthropic format)
   │
   ▼
-Kiro Bridge (协议转换 + 身份清洗)
+Kiro Bridge (protocol conversion + response sanitization)
   │
   ▼
-CodeWhisperer 后端 (AWS EventStream)
+CodeWhisperer Backend (AWS EventStream)
 ```
 
-客户端发送标准的 OpenAI 或 Anthropic 格式请求，网关将其转换为 CodeWhisperer 的私有协议，解析 AWS EventStream 二进制流式响应，清除 IDE 身份注入和工具标记，最后以原始协议格式返回给客户端。
+The client sends a standard OpenAI or Anthropic request. The gateway converts it to CodeWhisperer's proprietary protocol, parses the AWS EventStream binary response, strips IDE identity injection and tool markup, and returns the result in the original protocol format.
 
-## 前置条件
+## Prerequisites
 
 - Go 1.25+
-- Kiro CLI 已登录（网关从 Kiro CLI 的 SQLite 数据库读取认证令牌），或使用内置 PKCE 登录
+- Kiro CLI logged in (the gateway reads auth tokens from Kiro CLI's SQLite database), or use the built-in PKCE login
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 构建
+# Install
 go install github.com/pinealctx/kiro-bridge-go@latest
 
-# 或者从源码安装
+# Or build from source
 git clone git@github.com:pinealctx/kiro-bridge-go.git
+cd kiro-bridge-go
 go install .
 
-# 登录（如果未通过 Kiro CLI 登录）
+# Login (if not already logged in via Kiro CLI)
 kiro-bridge-go login
 
-# 启动（默认端口 8001）
+# Start (default port 8001)
 kiro-bridge-go
 
-# 指定端口 + 调试模式，调试模式会把请求和响应的所有报文都打印出来
+# Custom port + debug mode (prints full request/response payloads)
 kiro-bridge-go --port 8080 --debug
 
-# 健康检查
+# Health check
 curl http://localhost:8001/health
 ```
 
-## API 端点
+Pre-built binaries for Linux, macOS, and Windows are available on the [Releases](https://github.com/pinealctx/kiro-bridge-go/releases) page.
 
-### OpenAI 兼容
+## API Endpoints
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/v1/chat/completions` | Chat Completions（支持流式和非流式） |
-| GET  | `/v1/models` | 列出可用模型 |
+### OpenAI Compatible
 
-### Anthropic 兼容
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/v1/chat/completions` | Chat completions (streaming and non-streaming) |
+| GET | `/v1/models` | List available models |
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/v1/messages` | Messages API（支持流式和非流式） |
-| POST | `/v1/messages/count_tokens` | Token 计数 |
+### Anthropic Compatible
 
-### 其他
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/v1/messages` | Messages API (streaming and non-streaming) |
+| POST | `/v1/messages/count_tokens` | Token counting |
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET  | `/health` | 健康检查（含令牌验证） |
-| GET  | `/metrics` | Metrics（占位） |
+### Utility
 
-## 使用示例
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check (includes token validation) |
+| GET | `/metrics` | Metrics (placeholder) |
 
-### OpenAI 格式
+## Usage Examples
+
+### OpenAI Format
 
 ```bash
 curl http://localhost:8001/v1/chat/completions \
@@ -81,7 +86,7 @@ curl http://localhost:8001/v1/chat/completions \
   }'
 ```
 
-### OpenAI 格式（流式）
+### OpenAI Format (Streaming)
 
 ```bash
 curl http://localhost:8001/v1/chat/completions \
@@ -93,7 +98,7 @@ curl http://localhost:8001/v1/chat/completions \
   }'
 ```
 
-### Anthropic 格式
+### Anthropic Format
 
 ```bash
 curl http://localhost:8001/v1/messages \
@@ -106,34 +111,34 @@ curl http://localhost:8001/v1/messages \
   }'
 ```
 
-### 配合第三方工具
+### With Third-Party Tools
 
-可以将 Kiro Bridge 作为 OpenAI 兼容后端接入各种工具：
+Use Kiro Bridge as an OpenAI/Anthropic-compatible backend for any tool:
 
 ```bash
-# 作为 Claude Code 的 API 后端
+# As a backend for Claude Code
 ANTHROPIC_BASE_URL=http://localhost:8001 claude
 
-# 作为 OpenAI 兼容客户端的后端
+# As an OpenAI-compatible backend
 OPENAI_API_BASE=http://localhost:8001/v1 your-tool
 ```
 
-## 配置
+## Configuration
 
-配置优先级：环境变量 > `config.toml` > 默认值
+Priority: environment variable > `config.toml` > default value.
 
-| 环境变量 | 默认值 | 说明 |
-|----------|--------|------|
-| `PORT` | `8001` | 服务端口 |
-| `HOST` | `0.0.0.0` | 监听地址 |
-| `API_KEY` | 无 | Bearer Token 认证（留空则不鉴权） |
-| `LOG_LEVEL` | `info` | 日志级别 |
-| `KIRO_DB_PATH` | 平台自动检测 | Kiro CLI SQLite 数据库路径 |
-| `DEFAULT_MODEL` | `claude-opus-4-6` | 默认模型 |
-| `TOKEN_FILE_PATH` | `~/.kiro-bridge/token.json` | PKCE 登录令牌存储路径 |
-| `PROFILE_ARN` | 无 | CodeWhisperer Profile ARN |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8001` | Server port |
+| `HOST` | `0.0.0.0` | Listen address |
+| `API_KEY` | none | Bearer token auth (no auth if empty) |
+| `LOG_LEVEL` | `info` | Log level |
+| `KIRO_DB_PATH` | auto-detect | Path to Kiro CLI SQLite database |
+| `DEFAULT_MODEL` | `claude-opus-4-6` | Default model |
+| `TOKEN_FILE_PATH` | `~/.kiro-bridge/token.json` | PKCE login token storage path |
+| `PROFILE_ARN` | none | CodeWhisperer Profile ARN |
 
-也可以创建 `config.toml` 文件：
+You can also create a `config.toml` file:
 
 ```toml
 port = 8001
@@ -146,58 +151,64 @@ default_model = "claude-sonnet-4.6"
 "gpt-4" = "claude-opus-4.6"
 ```
 
-## 模型映射
+## Model Mapping
 
-所有客户端传入的模型名称都会通过内置映射表转换。支持的模型包括：
+All client model names are translated through a built-in mapping table. Supported models include:
 
 - `claude-opus-4.6` / `claude-opus-4-6`
-- `claude-opus-4.6-1m` / `claude-opus-4-6-1m`
 - `claude-sonnet-4.6` / `claude-sonnet-4-6`
-- `claude-sonnet-4.6-1m` / `claude-sonnet-4-6-1m`
 - `claude-opus-4.5` / `claude-sonnet-4.5` / `claude-haiku-4.5`
-- 以及更多历史版本
+- And more legacy versions
 
-可通过 `config.toml` 的 `[model_map]` 添加自定义映射。
+Custom mappings can be added via the `[model_map]` section in `config.toml`.
 
-## 认证流程
+## Authentication
 
-网关支持三种认证令牌来源（按优先级）：
+The gateway supports three token sources (by priority):
 
-1. **PKCE 登录**（`./kiro-bridge login`）— 令牌保存在 `~/.kiro-bridge/token.json`，支持自动刷新
-2. **External IdP**（Microsoft OAuth2）— 从 Kiro CLI SQLite 数据库读取
-3. **Legacy Builder ID** — 从 Kiro CLI SQLite 数据库读取
+1. **PKCE Login** (`kiro-bridge-go login`) — tokens saved to `~/.kiro-bridge/token.json` with auto-refresh
+2. **External IdP** (Microsoft OAuth2) — read from Kiro CLI's SQLite database
+3. **Legacy Builder ID** — read from Kiro CLI's SQLite database
 
-令牌过期前 5 分钟自动刷新，刷新失败时带重试（1s → 3s → 10s）。
+Tokens are automatically refreshed 5 minutes before expiry, with retry backoff (1s → 3s → 10s) on failure.
 
-## 项目结构
+## Features
+
+- OpenAI and Anthropic dual-protocol compatibility
+- Streaming and non-streaming responses
+- Tool use / function calling support
+- Image input support (base64 and URL)
+- Extended thinking / reasoning support
+- Auto-continuation when context usage exceeds 95% (up to 5 rounds)
+- Three-layer response sanitization: strips IDE-injected identity info, XML tool markup, and builtin tool calls
+- Builtin tool remapping to client-provided tools
+- Automatic token refresh with retry
+- CORS support for browser access
+- CJK-aware token estimation
+
+## Project Structure
 
 ```
-├── main.go                  # 入口（serve + login 子命令）
-├── config/config.go         # 配置加载（env > config.toml > default）
-├── token/manager.go         # 令牌管理（SQLite + PKCE + 双刷新流程）
+├── main.go                  # Entry point (serve + login subcommands)
+├── config/config.go         # Config loading (env > config.toml > defaults)
+├── token/manager.go         # Token management (SQLite + PKCE + dual refresh)
 ├── cw/
-│   ├── client.go            # CodeWhisperer HTTP 客户端（含重试）
-│   ├── eventstream.go       # AWS EventStream 二进制协议解析
-│   └── converter.go         # OpenAI → CodeWhisperer 格式转换
-├── sanitizer/sanitizer.go   # 三层响应清洗（XML标记/身份泄露/IDE工具）
-├── counter/tokens.go        # Token 估算（CJK 启发式）
+│   ├── client.go            # CodeWhisperer HTTP client with retry
+│   ├── eventstream.go       # AWS EventStream binary protocol parser
+│   └── converter.go         # OpenAI → CodeWhisperer format conversion
+├── sanitizer/
+│   ├── sanitizer.go         # Three-layer response sanitization
+│   └── remap.go             # Builtin tool remapping logic
+├── counter/tokens.go        # Token estimation (CJK heuristic)
+├── thinking/
+│   ├── config.go            # Thinking mode configuration
+│   └── parser.go            # Thinking block parser
 └── api/
-    ├── server.go            # HTTP 服务、中间件（CORS/Auth/RequestID）
-    ├── openai.go            # OpenAI 兼容端点
-    └── anthropic.go         # Anthropic 兼容端点
+    ├── server.go            # HTTP server, middleware (CORS, auth, request-id)
+    ├── openai.go            # OpenAI-compatible endpoints
+    └── anthropic.go         # Anthropic-compatible endpoints
 ```
-
-## 特性
-
-- OpenAI 和 Anthropic 双协议兼容
-- 流式和非流式响应
-- Tool Use / Function Calling 支持
-- 图片输入支持（base64）
-- 自动续写（上下文使用率 > 95% 时自动继续，最多 5 轮）
-- 响应清洗：自动剥离 IDE 注入的身份信息和工具标记
-- 令牌自动刷新与重试
-- CORS 支持，可直接从浏览器调用
 
 ## License
 
-Private / Internal Use
+MIT
