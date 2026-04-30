@@ -25,9 +25,17 @@ func (s *Server) handleMessages(c *gin.Context) {
 		return
 	}
 
+	var bodyBin []byte
 	if s.cfg.Debug {
-		bodyBin, _ := json.MarshalIndent(body, "", "  ")
-		log.Printf("[debug] handleMessages raw body: %s", string(bodyBin))
+		logBody := make(map[string]interface{}, len(body))
+		for k, v := range body {
+			if k == "system" || k == "tools" {
+				logBody[k] = fmt.Sprintf("(%T, omitted)", v)
+			} else {
+				logBody[k] = v
+			}
+		}
+		bodyBin, _ = json.MarshalIndent(logBody, "", "  ")
 	}
 
 	// Convert Anthropic messages to OpenAI format
@@ -54,7 +62,11 @@ func (s *Server) handleMessages(c *gin.Context) {
 		tools = nil
 	}
 
-	log.Printf("messages: model=%s reqHasModel=%v, messages=%d tools=%d stream=%v", model, reqModel, len(openaiMessages), len(tools), stream)
+	if s.cfg.Debug {
+		log.Printf("Claude code Request, model=%s reqHasModel=%v", model, reqModel)
+	} else {
+		log.Printf("Claude code Request, model=%s reqHasModel=%v, raw body: %s", model, reqModel, string(bodyBin))
+	}
 
 	// Parse thinking config
 	thinkCfg := thinking.ParseConfig(body)
@@ -360,7 +372,6 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 					active.inputBuf.WriteString(inputFrag)
 				}
 
-
 			case "contextUsageEvent":
 				pct, _ := msg.Payload["contextUsagePercentage"].(float64)
 				contextUsagePercentage = pct
@@ -415,7 +426,7 @@ func (s *Server) streamAnthropicResponse(c *gin.Context, accessToken string, mes
 
 	if s.cfg.Debug {
 		log.Printf("raw streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", continuationCount, outputTruncated, stopReason, rawRsp.String())
-		log.Printf("cw  streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", continuationCount, outputTruncated, stopReason, cwRsp.String())
+		//log.Printf("cw  streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s, content: %s", continuationCount, outputTruncated, stopReason, cwRsp.String())
 	} else {
 		log.Printf("finish streaming response, continuationCount: %d, outputTruncated: %v, stopReason: %s", continuationCount, outputTruncated, stopReason)
 	}
