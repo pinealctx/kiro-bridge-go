@@ -34,7 +34,7 @@ jobs:
             GOOS="${target%/*}"
             GOARCH="${target#*/}"
             bin="kiro-bridge"
-            archive="kiro-bridge-${GOOS}-${GOARCH}"
+            archive="kiro-bridge-${VERSION}-${GOOS}-${GOARCH}"
             if [ "$GOOS" = "windows" ]; then
               bin="${bin}.exe"
             fi
