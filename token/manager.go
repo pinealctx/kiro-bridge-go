@@ -22,6 +22,7 @@ type TokenData struct {
 	ClientID      string
 	TokenEndpoint string // external-idp only
 	ProfileARN    string
+	Region        string // legacy IdC region
 }
 
 type Manager struct {
@@ -167,13 +168,17 @@ func (m *Manager) parseLegacyToken(db *sql.DB, raw string) (*TokenData, error) {
 	}
 
 	log.Printf("Loaded legacy IdC token (Builder ID)")
-	return &TokenData{
+	td := &TokenData{
 		AccessToken:  data["access_token"].(string),
 		RefreshToken: data["refresh_token"].(string),
 		ExpiresAt:    expiresAt,
 		ClientID:     clientID,
 		ProfileARN:   profileARN,
-	}, nil
+	}
+	if v, ok := data["region"].(string); ok {
+		td.Region = v
+	}
+	return td, nil
 }
 
 var retryDelays = []time.Duration{1 * time.Second, 3 * time.Second, 10 * time.Second}
@@ -231,12 +236,18 @@ func (m *Manager) refreshExternalIdP(token *TokenData) error {
 }
 
 func (m *Manager) refreshLegacy(token *TokenData, idcURL string) error {
+	region := token.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+	refreshURL := "https://oidc." + region + ".amazonaws.com/token"
+
 	var lastErr error
 	for attempt := 0; attempt <= len(retryDelays); attempt++ {
 		if attempt > 0 {
 			time.Sleep(retryDelays[attempt-1])
 		}
-		log.Printf("Refreshing IdC access token (legacy, attempt %d)...", attempt+1)
+		log.Printf("Refreshing IdC access token (legacy, attempt %d, region %s)...", attempt+1, region)
 
 		body, _ := json.Marshal(map[string]string{
 			"clientId":     token.ClientID,
@@ -244,9 +255,8 @@ func (m *Manager) refreshLegacy(token *TokenData, idcURL string) error {
 			"grantType":    "refresh_token",
 			"refreshToken": token.RefreshToken,
 		})
-		req, _ := http.NewRequest("POST", idcURL, strings.NewReader(string(body)))
+		req, _ := http.NewRequest("POST", refreshURL, strings.NewReader(string(body)))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Host", "oidc.us-east-1.amazonaws.com")
 		req.Header.Set("x-amz-user-agent", "aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E KiroIDE")
 
 		resp, err := m.http.Do(req)
