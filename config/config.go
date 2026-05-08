@@ -53,8 +53,14 @@ func defaultDBPath() string {
 
 func defaultModelMap() map[string]string {
 	return map[string]string{
+		"claude-opus-4-7":     "claude-opus-4.7",
+		"claude-opus-4.7":     "claude-opus-4.7",
+		"claude-opus-4-7-1m":  "claude-opus-4.7",
+		"claude-opus-4.7-1m":  "claude-opus-4.7",
+
 		"claude-opus-4-6-1m": "claude-opus-4.6",
 		"claude-opus-4-6.1m": "claude-opus-4.6",
+		"claude-opus-4.6-1m": "claude-opus-4.6",
 		"claude-opus-4-6":    "claude-opus-4.6",
 		"claude-opus-4.6":    "claude-opus-4.6",
 
