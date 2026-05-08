@@ -275,6 +275,9 @@ func (m *Manager) refreshLegacy(token *TokenData, idcURL string) error {
 		}
 		token.AccessToken = data["accessToken"].(string)
 		token.ExpiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second)
+		if v, ok := data["refreshToken"].(string); ok && v != "" {
+			token.RefreshToken = v
+		}
 		log.Printf("Legacy token refreshed, expires in %.0fs", expiresIn)
 		return nil
 	}
