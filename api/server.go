@@ -40,6 +40,7 @@ func NewServer(cfg *config.Config, tm *token.Manager, client *cw.Client) *Server
 	r.GET("/", s.handleRoot)
 	r.GET("/health", s.handleHealth)
 	r.GET("/metrics", s.handleMetrics)
+	r.GET("/kiro/usage", s.checkAuth, s.handleKiroUsage)
 
 	// OpenAI routes
 	r.GET("/v1/models", s.checkAuth, s.handleListModels)

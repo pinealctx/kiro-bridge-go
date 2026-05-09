@@ -66,6 +66,7 @@ curl http://localhost:8001/health
 |------|------|------|
 | GET  | `/health` | 健康检查（含令牌验证） |
 | GET  | `/metrics` | Metrics（占位） |
+| GET  | `/kiro/usage` | Kiro 订阅额度使用情况 |
 
 ## 使用示例
 

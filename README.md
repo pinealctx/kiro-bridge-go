@@ -71,6 +71,7 @@ Pre-built binaries for Linux, macOS, and Windows are available on the [Releases]
 |--------|------|-------------|
 | GET | `/health` | Health check (includes token validation) |
 | GET | `/metrics` | Metrics (placeholder) |
+| GET | `/kiro/usage` | Kiro subscription usage quota |
 
 ## Usage Examples
 
