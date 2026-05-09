@@ -125,7 +125,68 @@ func (c *Client) resolveModel(model string) string {
 	model = strings.TrimSuffix(model, "-thinking")
 	cwModel, ok := c.cfg.ModelMap[model]
 	if !ok {
-		return model
+		return normalizeClaudeModel(model)
 	}
 	return cwModel
+}
+
+func normalizeClaudeModel(model string) string {
+	if !strings.HasPrefix(model, "claude-") {
+		return model
+	}
+
+	parts := strings.Split(model, "-")
+	if len(parts) < 3 {
+		return model
+	}
+
+	for i := 2; i < len(parts); i++ {
+		if major, minor, ok := parseClaudeVersion(parts[i:]); ok {
+			return strings.Join(parts[:i], "-") + "-" + major + "." + minor
+		}
+	}
+
+	return model
+}
+
+func parseClaudeVersion(parts []string) (string, string, bool) {
+	token := parts[0]
+	if dot := strings.IndexByte(token, '.'); dot > 0 {
+		major := token[:dot]
+		minor, ok := parseClaudeMinor(token[dot+1:])
+		return major, minor, ok && isShortNumber(major)
+	}
+
+	if len(parts) < 2 || !isShortNumber(token) {
+		return "", "", false
+	}
+
+	minor, ok := parseClaudeMinor(parts[1])
+	return token, minor, ok
+}
+
+func parseClaudeMinor(s string) (string, bool) {
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 || end > 2 {
+		return "", false
+	}
+	if suffix := s[end:]; suffix != "" && suffix != ".1m" {
+		return "", false
+	}
+	return s[:end], true
+}
+
+func isShortNumber(s string) bool {
+	if len(s) == 0 || len(s) > 2 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
